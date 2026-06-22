@@ -1,11 +1,7 @@
 FROM node:24-alpine
-
-COPY . /usr/src
-
-WORKDIR /usr/src
-
+WORKDIR /usr/src/app
+COPY package*.json ./
 RUN npm ci
-
+COPY . .
 RUN npm run build
-
-ENTRYPOINT ["/bin/sh", "-c" , "npm start"]
+CMD ["npm", "start"]

@@ -11,6 +11,7 @@ declare global { interface Window { YT?: typeof YT; onYouTubeIframeAPIReady?: ()
 const verbs = ["Brave", "Calm", "Dancing", "Flying", "Gentle", "Happy", "Lucky", "Mighty", "Swift", "Witty"];
 const nouns = ["Badger", "Falcon", "Koala", "Otter", "Panda", "Raven", "Tiger", "Turtle", "Whale", "Wolf"];
 const app = document.querySelector<HTMLDivElement>("#app")!;
+const serverHost = import.meta.env.VITE_SERVER_HOST || location.origin;
 const roomId = getRoomId();
 let socket: Socket | null = null;
 let playlist: PlaylistItem[] = [];
@@ -35,7 +36,7 @@ function renderRoom(id: string) {
     localStorage.setItem("watchparty:name", name);
   }
   app.innerHTML = `<main class="room"><section class="stage"><div id="video" class="video"><div class="empty">Add a YouTube or Facebook video URL</div></div><div class="controls"><button id="playPause">Play</button><input id="seek" type="range" min="0" max="1000" value="0"/></div><div id="users" class="users"></div></section><aside class="playlist"><h2>Room ${id}</h2><input id="urlInput" placeholder="Paste URL and press Enter"/><div id="queue"></div></aside></main>`;
-  socket = io({ query: { roomId: id, name } });
+  socket = io(serverHost, { query: { roomId: id, name } });
   socket.on("state", (state: { playlist: PlaylistItem[]; playback: Playback; users: UserInfo[] }) => { playlist = state.playlist; playback = state.playback; users = state.users; paintAll(); });
   socket.on("playlist", (next) => { playlist = next; paintQueue(); loadCurrent(); });
   socket.on("playback", (next) => { playback = next; applyPlayback(); });
@@ -53,7 +54,7 @@ async function addUrl(event: KeyboardEvent) {
   const url = input.value.trim();
   if (!url) return;
   input.value = "";
-  const meta = await (await fetch(`/api/metadata?url=${encodeURIComponent(url)}`)).json() as Omit<PlaylistItem, "id">;
+  const meta = await (await fetch(`${serverHost}/api/metadata?url=${encodeURIComponent(url)}`)).json() as Omit<PlaylistItem, "id">;
   playlist.push({ id: crypto.randomUUID(), ...meta });
   if (!playback.itemId) playback.itemId = playlist[0].id;
   emitPlaylist();
