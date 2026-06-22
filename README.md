@@ -24,13 +24,12 @@ A website for watching videos together.
 
 - Clone this repo via `git clone git@github.com:howardchung/watchparty.git`
 - Install npm dependencies for the project via `npm install`
-- Start the server via `npm run dev`
-  - Defaults to port 8080, customize with `PORT` env var
-  - Set `SSL_KEY_FILE` and `SSL_CRT_FILE` for HTTPS.
-- Start the React application in a separate shell and port via `npm run ui`
-  - Point to server using `VITE_SERVER_HOST` env var if you customized it above
-  - Set `SSL_KEY_FILE` and `SSL_CRT_FILE` for HTTPS.
-  - HTTPS is required by the browser for some WebRTC features (camera, etc.)
+- Start the server and React application together via `npm run dev`
+  - The server defaults to port 8080. Customize it with `PORT=3000 npm run dev` (macOS/Linux), `$env:PORT=3000; npm run dev` (PowerShell), or `npm run dev -- --port 3000`.
+  - The React app defaults to port 5173. Open the URL printed by Vite, usually `http://localhost:5173`.
+  - `npm run dev` automatically points the React app at the local server. You can still override this with `VITE_SERVER_HOST`.
+  - Set `SSL_KEY_FILE` and `SSL_CRT_FILE` for HTTPS. HTTPS is required by the browser for some WebRTC features (camera, etc.).
+- To run the two pieces separately, start the API with `npm run dev:server` and the React app with `npm run ui` in another shell.
 - Duplicate the `.env.example` file
 - Rename it to `.env`
 - Add config for the features you want as described in the advanced setup

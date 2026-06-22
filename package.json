@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server/server.ts",
+    "start": "tsx server/server.ts",
     "ui": "vite --host",
-    "dev": "node --watch-path . server/server.ts",
+    "dev": "node scripts/dev.mjs",
     "build": "npm run buildReact && npm run typecheckServer",
     "buildReact": "vite build && npm run typecheck",
-    "pm2": "pm2 start server/server.ts",
+    "pm2": "pm2 start server/server.ts --interpreter ./node_modules/.bin/tsx",
     "deploy": "git fetch && git reset --hard origin/release && pm2 flush && pm2 delete all && pm2 start server/ecosystem.config.js",
     "prettier": "npx prettier --write .",
     "typecheckServer": "tsc --project server/tsconfig.json",
@@ -18,7 +18,8 @@
     "updateSnapshot": "curl -X POST localhost:3100/updateSnapshot -H 'Content-Type: application/json' -d '{\"provider\":\"Hetzner\",\"region\":\"US\"}'",
     "testvBrowser": "docker run -d --rm --name=vbrowser --log-opt max-size=1g --net=host --shm-size=1g --cap-add=\"SYS_ADMIN\" -e DISPLAY=\":99.0\" -e NEKO_PASSWORD=user -e NEKO_PASSWORD_ADMIN=admin -e NEKO_BIND=\":5100\" -e NEKO_EPR=\":59000-59100\" -e NEKO_H264=\"1\" howardc93/vbrowser",
     "testvlc": "docker run -d --rm --name=vlc --log-opt max-size=1g --net=host -e VLC_MEDIA=\"https://github.com/ietf-wg-cellar/matroska-test-files/raw/master/test_files/test1.mkv\" -e NEKO_PASSWORD=user -e NEKO_PASSWORD_ADMIN=admin -e NEKO_BIND=\":5100\" -e NEKO_EPR=\":59000-59100\" -e NEKO_H264=\"1\" m1k1o/neko:vlc",
-    "analyze": "npx source-map-explorer 'build/assets/*.js' --html result.html --no-border-checks"
+    "analyze": "npx source-map-explorer 'build/assets/*.js' --html result.html --no-border-checks",
+    "dev:server": "tsx watch server/server.ts"
   },
   "dependencies": {
     "@googleapis/youtube": "^8.0.2",
@@ -72,6 +73,7 @@
     "recharts": "^2.15.4",
     "socket.io-client": "^4.8.1",
     "srt-webvtt": "^2.0.0",
+    "tsx": "^4.22.4",
     "twitch-m3u8": "^1.1.5",
     "typescript": "^5.9.3",
     "vite": "^7.2.7",

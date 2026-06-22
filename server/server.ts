@@ -49,7 +49,13 @@ if (config.SSL_KEY_FILE && config.SSL_CRT_FILE) {
 } else {
   server = new http.Server(app);
 }
-server?.listen(config.PORT, config.HOST);
+server?.listen(config.PORT, config.HOST, () => {
+  console.log(
+    "WatchParty server listening on http://%s:%s",
+    config.HOST,
+    config.PORT,
+  );
+});
 
 const io = new Server(server, { cors: {}, transports: ["websocket"] });
 io.engine.use(async (req: any, res: Response, next: () => void) => {
@@ -665,13 +671,15 @@ async function saveRooms() {
       }
     }),
   );
-  const end = Date.now();
-  console.log(
-    "[SAVEROOMS] %s saved in %sms, %s skipped",
-    saveCount,
-    end - start,
-    skipCount,
-  );
+  if (saveCount || skipCount) {
+    const end = Date.now();
+    console.log(
+      "[SAVEROOMS] %s saved in %sms, %s skipped",
+      saveCount,
+      end - start,
+      skipCount,
+    );
+  }
 }
 
 async function release() {
