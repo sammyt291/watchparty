@@ -3,7 +3,9 @@ import { loadEnvFile } from "node:process";
 try {
   loadEnvFile();
 } catch (e) {
-  console.log(e);
+  if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+    console.log(e);
+  }
 }
 
 const defaults = {

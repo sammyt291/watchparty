@@ -4,7 +4,9 @@ import fs from "node:fs";
 try {
   loadEnvFile();
 } catch (e) {
-  console.log(e);
+  if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+    console.log(e);
+  }
 }
 
 export default {
