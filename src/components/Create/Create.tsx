@@ -1,10 +1,8 @@
-import React, { useContext, useRef } from "react";
+import React, { useRef } from "react";
 import { createRoom } from "../TopBar/TopBar";
 import { Loader } from "@mantine/core";
-import { MetadataContext } from "../../MetadataContext";
 
 export const Create = () => {
-  const { user } = useContext(MetadataContext);
   const buttonEl = useRef<HTMLButtonElement>(null);
   setTimeout(() => {
     buttonEl?.current?.click();
@@ -27,7 +25,6 @@ export const Create = () => {
         ref={buttonEl}
         onClick={() => {
           createRoom(
-            user,
             false,
             new URLSearchParams(window.location.search).get("video") ??
               undefined,
