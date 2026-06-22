@@ -36,6 +36,7 @@ declare module "socket.io" {
     clientId: string;
     uid: string;
     isSub: boolean;
+    pingMs?: number;
   }
 }
 
@@ -63,6 +64,7 @@ export class Room {
   private io: Server;
   private socketIdMap: StringDict = {};
   private tsInterval: NodeJS.Timeout | undefined = undefined;
+  private pingInterval: NodeJS.Timeout | undefined = undefined;
   public isChatDisabled: boolean | undefined = undefined;
   public lastUpdateTime: Date = new Date();
   private preventTSUpdate = false;
@@ -105,6 +107,7 @@ export class Room {
         io.of(roomId).emit("REC:tsMap", this.tsMap);
       }
     }, 1000);
+    this.pingInterval = setInterval(() => this.pollPings(), 5000);
 
     io.of(roomId).use(async (socket, next) => {
       if (postgres) {
@@ -190,7 +193,7 @@ export class Room {
       }
       // Keep track of the current socketID associated with this client (only used for signaling and kicking)
       this.socketIdMap[clientId] = socket.id;
-      if (!this.roster.find(user => user.id === clientId)) {
+      if (!this.roster.find((user) => user.id === clientId)) {
         this.roster.push({ id: clientId });
       }
 
@@ -219,6 +222,7 @@ export class Room {
       socket.clientId = clientId;
       socket.uid = "";
       socket.isSub = false;
+      socket.pingMs = undefined;
 
       // Check if this socket matches this.lock UID
       const validateLock = () => {
@@ -300,7 +304,7 @@ export class Room {
       );
       socket.on("CMD:leaveScreenShare", () => this.leaveScreenSharing(socket));
       socket.on("CMD:startVBrowser", (data: unknown) => {
-        validateLock() && this.startVBrowser(socket, data);
+        socket.emit("errorMessage", "VBrowser is no longer available.");
       });
       socket.on("CMD:stopVBrowser", () => {
         validateLock() && this.stopVBrowser();
@@ -448,6 +452,9 @@ export class Room {
     if (this.tsInterval) {
       clearInterval(this.tsInterval);
     }
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+    }
   };
 
   public getRosterForStats = () => {
@@ -474,11 +481,36 @@ export class Room {
 
   protected getRosterForApp = (): User[] => {
     return this.roster.map((p) => {
+      const socketId = this.socketIdMap[p.id];
+      const socket = socketId
+        ? this.io.of(this.roomId).sockets.get(socketId)
+        : undefined;
       return {
         ...p,
         isScreenShare: p.id === this.getSharerId(),
+        pingMs: socket?.pingMs,
       };
     });
+  };
+
+  private pollPings = () => {
+    this.io.of(this.roomId).sockets.forEach((socket) => {
+      const start = Date.now();
+      socket.timeout(2000).emit("REC:ping", (err: unknown) => {
+        if (!err) {
+          socket.pingMs = Date.now() - start;
+          this.io.of(this.roomId).emit("roster", this.getRosterForApp());
+        }
+      });
+    });
+    this.io.of(this.roomId).emit("roster", this.getRosterForApp());
+  };
+
+  private getSyncExecuteAt = () => {
+    const pings = [...this.io.of(this.roomId).sockets.values()].map(
+      (socket) => socket.pingMs ?? 0,
+    );
+    return Date.now() + Math.max(100, ...pings) + 50;
   };
 
   private getHostState = (): HostState => {
@@ -598,6 +630,10 @@ export class Room {
   };
 
   private startHosting = async (socket: Socket, data: string) => {
+    if (data?.startsWith("vbrowser://")) {
+      socket.emit("errorMessage", "VBrowser is no longer available.");
+      return;
+    }
     if (this.vBrowser) {
       socket.emit(
         "errorMessage",
@@ -749,7 +785,9 @@ export class Room {
   };
 
   private playVideo = (socket: Socket) => {
-    socket.broadcast.emit("REC:play", this.video);
+    this.io.of(this.roomId).emit("REC:play", {
+      executeAt: this.getSyncExecuteAt(),
+    });
     const chatMsg = {
       id: socket.clientId,
       cmd: "play",
@@ -760,7 +798,9 @@ export class Room {
   };
 
   private pauseVideo = (socket: Socket) => {
-    socket.broadcast.emit("REC:pause");
+    this.io.of(this.roomId).emit("REC:pause", {
+      executeAt: this.getSyncExecuteAt(),
+    });
     const chatMsg = {
       id: socket.clientId,
       cmd: "pause",
@@ -775,7 +815,10 @@ export class Room {
       return;
     }
     this.videoTS = data;
-    socket.broadcast.emit("REC:seek", data);
+    this.io.of(this.roomId).emit("REC:seek", {
+      time: data,
+      executeAt: this.getSyncExecuteAt(),
+    });
     const chatMsg = { id: socket.clientId, cmd: "seek", msg: data?.toString() };
     this.addChatMessage(socket, chatMsg);
   };

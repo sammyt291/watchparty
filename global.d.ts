@@ -13,6 +13,7 @@ interface User {
   isVideoChat?: boolean;
   isMuted?: boolean;
   isScreenShare?: boolean;
+  pingMs?: number;
 }
 
 interface Reaction {

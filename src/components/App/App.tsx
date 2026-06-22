@@ -1,6 +1,6 @@
 import type MediasoupClient from "mediasoup-client";
 import React from "react";
-import { Alert, Loader, Menu, Overlay, Select, Title } from "@mantine/core";
+import { Alert, Loader, Menu, Overlay, Title } from "@mantine/core";
 import io, { Socket } from "socket.io-client";
 import {
   formatSpeed,
@@ -19,7 +19,6 @@ import {
   isHls,
   isScreenShare,
   isFileShare,
-  isVBrowser,
   isDash,
   VIDEO_MAX_HEIGHT_CSS,
   createUuid,
@@ -29,20 +28,16 @@ import {
 import { generateName } from "../../utils/generateName";
 import { Chat } from "../Chat/Chat";
 import { TopBar } from "../TopBar/TopBar";
-import { VBrowser } from "../VBrowser/VBrowser";
 import { VideoChat } from "../VideoChat/VideoChat";
 import { getCurrentSettings } from "../Settings/LocalSettings";
 import { MultiStreamModal } from "../Modal/MultiStreamModal";
 import { ComboBox } from "../ComboBox/ComboBox";
 import { SearchComponent } from "../SearchComponent/SearchComponent";
 import { Controls } from "../Controls/Controls";
-import { VBrowserModal } from "../Modal/VBrowserModal";
-import { SettingsModal } from "../Settings/SettingsModal";
 import { ErrorModal } from "../Modal/ErrorModal";
 import { PasswordModal } from "../Modal/PasswordModal";
 import { ScreenShareModal } from "../Modal/ScreenShareModal";
 import { FileShareModal } from "../Modal/FileShareModal";
-import firebase from "firebase/compat/app";
 import { SubtitleModal } from "../Modal/SubtitleModal";
 import { HTML } from "./HTML";
 import { YouTube } from "./YouTube";
@@ -52,18 +47,12 @@ import { MetadataContext } from "../../MetadataContext";
 import ChatVideoCard from "../ChatVideoCard/ChatVideoCard";
 import { ActionIcon, Badge, TextInput, Button } from "@mantine/core";
 import {
-  IconAntennaBars5,
-  IconBrowser,
   IconChevronLeft,
   IconChevronRight,
   IconFile,
-  IconKeyboardFilled,
   IconList,
   IconScreenShare,
-  IconSettings,
   IconUser,
-  IconUserScreen,
-  IconUsersGroup,
   IconVolume,
   IconX,
 } from "@tabler/icons-react";
@@ -122,7 +111,6 @@ interface AppState {
   fullScreen: boolean;
   controlsTimestamp: number;
   watchOptions: SearchResult[];
-  isVBrowser: boolean;
   isAutoPlayable: boolean;
   downloaded: number;
   total: number;
@@ -137,13 +125,8 @@ interface AppState {
   overlayMsg: string;
   isErrorAuth: boolean;
   settings: Settings;
-  vBrowserResolution: string;
-  vBrowserQuality: string;
-  isVBrowserLarge: boolean;
   nonPlayableMedia: boolean;
   currentTab: string;
-  isSubscribeModalOpen: boolean;
-  isVBrowserModalOpen: boolean;
   isScreenShareModalOpen: boolean;
   isFileShareModalOpen: boolean;
   isSubtitleModalOpen: boolean;
@@ -157,7 +140,6 @@ interface AppState {
   warningMessage: string;
   isChatDisabled: boolean;
   showChatColumn: boolean;
-  showPeopleColumn: boolean;
   owner: string | undefined;
   vanity: string | undefined;
   password: string | undefined;
@@ -168,7 +150,6 @@ interface AppState {
   mediaPath: string | undefined;
   roomPlaybackRate: number;
   isLiveStream: boolean;
-  settingsModalOpen: boolean;
   uploadController: AbortController | undefined;
 }
 
@@ -196,7 +177,6 @@ export class App extends React.Component<AppProps, AppState> {
     fullScreen: false,
     controlsTimestamp: 0,
     watchOptions: [],
-    isVBrowser: false,
     isAutoPlayable: true,
     downloaded: 0,
     total: 0,
@@ -206,14 +186,9 @@ export class App extends React.Component<AppProps, AppState> {
     overlayMsg: "",
     isErrorAuth: false,
     settings: {},
-    vBrowserResolution: "1280x720@30",
-    vBrowserQuality: "1",
-    isVBrowserLarge: false,
     nonPlayableMedia: false,
     currentTab:
       new URLSearchParams(window.location.search).get("tab") ?? "chat",
-    isSubscribeModalOpen: false,
-    isVBrowserModalOpen: false,
     isScreenShareModalOpen: false,
     isFileShareModalOpen: false,
     isSubtitleModalOpen: false,
@@ -233,7 +208,6 @@ export class App extends React.Component<AppProps, AppState> {
             window.localStorage.getItem("watchparty-showchatcolumn") ?? "1",
           ),
         ),
-    showPeopleColumn: false,
     // Boolean(
     //       Number(
     //         window.localStorage.getItem('watchparty-showpeoplecolumn') ?? '0',
@@ -249,7 +223,6 @@ export class App extends React.Component<AppProps, AppState> {
     mediaPath: undefined,
     roomPlaybackRate: 0,
     isLiveStream: false,
-    settingsModalOpen: false,
     uploadController: undefined,
   };
   socket: Socket = null!;
@@ -291,13 +264,6 @@ export class App extends React.Component<AppProps, AppState> {
     this.loadSettings();
     this.loadYouTube();
     this.init();
-    if (config.VITE_FIREBASE_CONFIG) {
-      firebase.auth().onAuthStateChanged(async (user: firebase.User | null) => {
-        if (user) {
-          this.loadSignInData(user);
-        }
-      });
-    }
   }
 
   componentWillUnmount() {
@@ -356,7 +322,6 @@ export class App extends React.Component<AppProps, AppState> {
       });
       // Use the name in our state, generate one if empty
       this.updateName(this.state.myName || (await generateName()));
-      this.loadSignInData(this.context.user);
       // Re-join video chat if we were in it before the reconnection
       if (window.watchparty.ourStream) {
         socket.emit("CMD:joinVideo");
@@ -394,18 +359,26 @@ export class App extends React.Component<AppProps, AppState> {
         this.setState({ successMessage: "" });
       }, 3000);
     });
+    socket.on("REC:ping", (ack: () => void) => {
+      ack();
+    });
     socket.on("kicked", () => {
       window.location.assign("/");
     });
-    socket.on("REC:play", () => {
-      this.localPlay();
+    socket.on("REC:play", (data?: { executeAt?: number }) => {
+      this.scheduleSyncedAction(data?.executeAt, () => this.localPlay());
     });
-    socket.on("REC:pause", () => {
-      this.localPause();
+    socket.on("REC:pause", (data?: { executeAt?: number }) => {
+      this.scheduleSyncedAction(data?.executeAt, () => this.localPause());
     });
-    socket.on("REC:seek", (data: number) => {
-      this.localSeek(data);
-    });
+    socket.on(
+      "REC:seek",
+      (data: number | { time: number; executeAt?: number }) => {
+        const time = typeof data === "number" ? data : data.time;
+        const executeAt = typeof data === "number" ? undefined : data.executeAt;
+        this.scheduleSyncedAction(executeAt, () => this.localSeek(time));
+      },
+    );
     socket.on("REC:playbackRate", (data: number) => {
       this.setState({ roomPlaybackRate: data });
       if (data > 0) {
@@ -420,9 +393,6 @@ export class App extends React.Component<AppProps, AppState> {
     socket.on("REC:loop", (data: boolean) => {
       this.setState({ roomLoop: data });
     });
-    socket.on("REC:changeController", (data: string) => {
-      this.setState({ controller: data });
-    });
     socket.on("REC:host", async (data: HostState) => {
       let currentMedia = data.video || "";
       if (this.playingScreenShare() && !isScreenShare(currentMedia)) {
@@ -431,22 +401,11 @@ export class App extends React.Component<AppProps, AppState> {
       if (this.playingFileShare() && !isFileShare(currentMedia)) {
         this.stopPublishingLocalStream();
       }
-      if (this.playingVBrowser() && !isVBrowser(currentMedia)) {
-        this.stopVBrowser();
-      }
       if (this.playingScreenShare() && isScreenShare(currentMedia)) {
         // Ignore, it's probably a reconnection
         return;
       }
       if (this.playingFileShare() && isFileShare(currentMedia)) {
-        // Ignore, it's probably a reconnection
-        return;
-      }
-      if (
-        this.playingVBrowser() &&
-        this.getVBrowserHost() &&
-        isVBrowser(currentMedia)
-      ) {
         // Ignore, it's probably a reconnection
         return;
       }
@@ -459,9 +418,6 @@ export class App extends React.Component<AppProps, AppState> {
           roomPlaybackRate: data.playbackRate,
           loading: Boolean(data.video),
           nonPlayableMedia: false,
-          isVBrowserLarge: data.isVBrowserLarge,
-          vBrowserResolution: "1280x720@30",
-          vBrowserQuality: "1",
           controller: data.controller,
           isLiveStream: false,
         },
@@ -485,18 +441,11 @@ export class App extends React.Component<AppProps, AppState> {
             this.Player().setPlaybackRate(data.playbackRate);
           }
 
-          if (
-            this.playingScreenShare() ||
-            this.playingFileShare() ||
-            this.playingVBrowser()
-          ) {
+          if (this.playingScreenShare() || this.playingFileShare()) {
             console.log(
               "exiting REC:host since we are using webRTC (fileshare, screenshare, or vbrowser). Check setupRTCConnections()",
             );
-            if (!(this.playingVBrowser() && !this.getVBrowserHost())) {
-              // Remove the loader unless we're waiting for a vbrowser
-              this.setLoadingFalse();
-            }
+            this.setLoadingFalse();
             return;
           }
           if (this.usingYoutube() && !this.YouTubeInterface.isReady()) {
@@ -889,32 +838,6 @@ export class App extends React.Component<AppProps, AppState> {
     // Load settings from localstorage
     let settings = getCurrentSettings();
     this.setState({ settings });
-  };
-
-  loadSignInData = async (user: firebase.User | undefined) => {
-    if (user && this.socket) {
-      // NOTE: firebase auth doesn't provide the actual first name data that individual providers (G/FB) do
-      // It's accessible at the time the user logs in but not afterward
-      // If we want accurate surname/given name we'll need to save that somewhere
-      const firstName = user.displayName?.split(" ")[0];
-      if (firstName) {
-        // Don't update the username if the user wants to customize their own
-        // Set a flag in localstorage so we only update this once, if the user changes name manually later we won't overwrite
-        // Clear the flag on logout
-        if (!window.localStorage.getItem("watchparty-loginname")) {
-          this.updateName(firstName);
-          window.localStorage.setItem(
-            "watchparty-loginname",
-            Date.now().toString(),
-          );
-        }
-      }
-      const userImage = await getUserImage(user);
-      if (userImage) {
-        this.updatePicture(userImage);
-      }
-      this.updateUid(user);
-    }
   };
 
   loadYouTube = () => {
@@ -1633,19 +1556,6 @@ export class App extends React.Component<AppProps, AppState> {
     }
   };
 
-  startVBrowser = async (options: { size: string }) => {
-    this.socket.emit("CMD:startVBrowser", { options });
-  };
-
-  stopVBrowser = async () => {
-    this.socket.emit("CMD:stopVBrowser");
-  };
-
-  changeController = async (value: string | null) => {
-    // console.log(data);
-    this.socket.emit("CMD:changeController", value);
-  };
-
   sendSignalSS = async (to: string, data: any, sharer?: boolean) => {
     // console.log('sendSS', to, data);
     this.socket.emit("signalSS", { to, msg: data, sharer });
@@ -1673,20 +1583,16 @@ export class App extends React.Component<AppProps, AppState> {
     return isFileShare(this.state.roomMedia);
   };
 
-  playingVBrowser = () => {
-    return isVBrowser(this.state.roomMedia);
-  };
-
-  getVBrowserPass = () => {
-    return this.state.roomMedia.replace("vbrowser://", "").split("@")[0];
-  };
-
-  getVBrowserHost = () => {
-    return this.state.roomMedia.replace("vbrowser://", "").split("@")[1];
-  };
-
   isPauseDisabled = () => {
-    return this.playingScreenShare() || this.playingVBrowser();
+    return this.playingScreenShare();
+  };
+
+  scheduleSyncedAction = (
+    executeAt: number | undefined,
+    action: () => void,
+  ) => {
+    const delay = executeAt ? Math.max(0, executeAt - Date.now()) : 0;
+    window.setTimeout(action, delay);
   };
 
   localSeek = (customTime?: number) => {
@@ -1773,17 +1679,14 @@ export class App extends React.Component<AppProps, AppState> {
     const shouldPlay = this.Player().shouldPlay();
     if (shouldPlay) {
       this.socket.emit("CMD:play");
-      this.localPlay();
     } else {
       this.socket.emit("CMD:pause");
-      this.localPause();
     }
   };
 
   roomSeek = (time: number) => {
     let target = time;
     target = Math.max(target, 0);
-    this.Player().seekVideo(target);
     const toSend = this.getRoomTSToSet(target);
     this.socket.emit("CMD:seek", toSend);
   };
@@ -1828,14 +1731,7 @@ export class App extends React.Component<AppProps, AppState> {
     // Default: fullscreen the body (theater mode)
     let container = document.body as HTMLElement;
     if (bVideoOnly || isMobile()) {
-      if (this.playingVBrowser() && !isMobile()) {
-        // vbrowser needs to fullscreen the control wrapper div
-        // Can't really control the VBrowser on mobile anyway, so just fullscreen the video
-        container = document.getElementById("leftVideoParent") as HTMLElement;
-      } else {
-        // fullscreen just the video
-        container = this.Player().getVideoEl();
-      }
+      container = this.Player().getVideoEl();
     }
     if (
       !container.requestFullscreen &&
@@ -1896,12 +1792,6 @@ export class App extends React.Component<AppProps, AppState> {
     this.socket.emit("CMD:picture", url);
   };
 
-  updateUid = async (user: firebase.User) => {
-    const uid = user.uid;
-    const token = await user.getIdToken();
-    this.socket.emit("CMD:uid", { uid, token });
-  };
-
   getMediaDisplayName = (input?: string) => {
     if (!input) {
       return "";
@@ -1917,9 +1807,6 @@ export class App extends React.Component<AppProps, AppState> {
     if (input.startsWith("fileshare://")) {
       const sharer = this.state.participants.find((user) => user.isScreenShare);
       return this.state.nameMap[sharer?.id ?? ""] + "'s file";
-    }
-    if (input.startsWith("vbrowser://")) {
-      return "Virtual Browser" + (this.state.isVBrowserLarge ? "+" : "");
     }
     if (isMagnet(input)) {
       const magnetParsed = new URLSearchParams(input);
@@ -1989,10 +1876,6 @@ export class App extends React.Component<AppProps, AppState> {
     this.setState({ controlsTimestamp: Date.now() });
   };
 
-  setSettingsModalOpen = (settingsModalOpen: boolean) => {
-    this.setState({ settingsModalOpen });
-  };
-
   render() {
     const sharer = this.state.participants.find((p) => p.isScreenShare);
     const playlist = this.state.playlist;
@@ -2039,12 +1922,6 @@ export class App extends React.Component<AppProps, AppState> {
             startConvert={this.startConvert}
           />
         )}
-        {this.state.isVBrowserModalOpen && (
-          <VBrowserModal
-            closeModal={() => this.setState({ isVBrowserModalOpen: false })}
-            startVBrowser={this.startVBrowser}
-          />
-        )}
         {this.state.isScreenShareModalOpen && (
           <ScreenShareModal
             closeModal={() => this.setState({ isScreenShareModalOpen: false })}
@@ -2077,32 +1954,6 @@ export class App extends React.Component<AppProps, AppState> {
         )}
         {this.state.overlayMsg && <ErrorModal error={this.state.overlayMsg} />}
         {this.state.isErrorAuth && <PasswordModal roomId={this.state.roomId} />}
-        <SettingsModal
-          modalOpen={this.state.settingsModalOpen}
-          setModalOpen={this.setSettingsModalOpen}
-          roomLock={this.state.roomLock}
-          setRoomLock={this.setRoomLock}
-          socket={this.socket}
-          roomId={this.state.roomId}
-          isChatDisabled={this.state.isChatDisabled}
-          setIsChatDisabled={this.setIsChatDisabled}
-          owner={this.state.owner}
-          setOwner={this.setOwner}
-          vanity={this.state.vanity}
-          setVanity={this.setVanity}
-          inviteLink={this.state.inviteLink}
-          password={this.state.password}
-          setPassword={this.setPassword}
-          clearChat={this.clearChat}
-          roomTitle={this.state.roomTitle}
-          setRoomTitle={this.setRoomTitle}
-          roomDescription={this.state.roomDescription}
-          setRoomDescription={this.setRoomDescription}
-          roomTitleColor={this.state.roomTitleColor}
-          setRoomTitleColor={this.setRoomTitleColor}
-          mediaPath={this.state.mediaPath}
-          setMediaPath={this.setMediaPath}
-        />
         {this.state.errorMessage && (
           <Alert
             title="Error"
@@ -2198,146 +2049,36 @@ export class App extends React.Component<AppProps, AppState> {
                           Stop Share
                         </Button>
                       )}
-                      {!this.localStreamToPublish &&
-                        !sharer &&
-                        !this.playingVBrowser() && (
-                          <Button
-                            className={styles.shareButton}
-                            color="blue"
-                            disabled={!this.haveLock()}
-                            onClick={() => {
-                              this.setState({
-                                isScreenShareModalOpen: true,
-                              });
-                            }}
-                            leftSection={<IconScreenShare />}
-                          >
-                            Screenshare
-                          </Button>
-                        )}
-                      {!this.localStreamToPublish &&
-                        !sharer &&
-                        !this.playingVBrowser() && (
-                          <Button
-                            className={styles.shareButton}
-                            disabled={!this.haveLock()}
-                            color="green"
-                            onClick={() => {
-                              this.setState({
-                                isVBrowserModalOpen: true,
-                              });
-                            }}
-                            leftSection={<IconBrowser />}
-                          >
-                            VBrowser
-                          </Button>
-                        )}
-                      {this.playingVBrowser() && (
-                        <>
-                          <Button
-                            color="red"
-                            disabled={!this.haveLock()}
-                            onClick={this.stopVBrowser}
-                            leftSection={<IconX />}
-                          >
-                            Stop VBrowser
-                          </Button>
-                          <Select
-                            leftSection={<IconKeyboardFilled />}
-                            value={this.state.controller}
-                            placeholder="No controller"
-                            clearable
-                            onChange={this.changeController}
-                            disabled={!this.haveLock()}
-                            data={this.state.participants.map((p) => ({
-                              label: this.state.nameMap[p.id] || p.id,
-                              value: p.id,
-                            }))}
-                          ></Select>
-                          <Select
-                            leftSection={<IconUserScreen />}
-                            disabled={!this.haveLock()}
-                            value={this.state.vBrowserResolution}
-                            onChange={(value) =>
-                              this.setState({
-                                vBrowserResolution: value!,
-                              })
-                            }
-                            data={[
-                              {
-                                label: "1080p (Plus only)",
-                                value: "1920x1080@30",
-                                disabled: !this.state.isVBrowserLarge,
-                              },
-                              {
-                                label: "720p",
-                                value: "1280x720@30",
-                              },
-                              {
-                                label: "576p",
-                                value: "1024x576@60",
-                              },
-                              {
-                                label: "486p",
-                                value: "864x486@60",
-                              },
-                              {
-                                label: "360p",
-                                value: "640x360@60",
-                              },
-                            ]}
-                          ></Select>
-                          <Select
-                            leftSection={<IconAntennaBars5 />}
-                            disabled={!this.haveLock()}
-                            value={this.state.vBrowserQuality}
-                            onChange={(value) => {
-                              this.setState({
-                                vBrowserQuality: value!,
-                              });
-                            }}
-                            data={[
-                              {
-                                label: "Eco (0.25x)",
-                                value: "0.25",
-                              },
-                              {
-                                label: "Low (0.5x)",
-                                value: "0.5",
-                              },
-                              {
-                                label: "Standard (1x)",
-                                value: "1",
-                              },
-                              {
-                                label: "High (1.5x)",
-                                value: "1.5",
-                              },
-                              {
-                                label: "Ultra (2x)",
-                                value: "2",
-                              },
-                            ]}
-                          ></Select>
-                        </>
+                      {!this.localStreamToPublish && !sharer && (
+                        <Button
+                          className={styles.shareButton}
+                          color="blue"
+                          disabled={!this.haveLock()}
+                          onClick={() => {
+                            this.setState({
+                              isScreenShareModalOpen: true,
+                            });
+                          }}
+                          leftSection={<IconScreenShare />}
+                        >
+                          Screenshare
+                        </Button>
                       )}
-                      {!this.localStreamToPublish &&
-                        !sharer &&
-                        !this.playingVBrowser() && (
-                          <Button
-                            className={styles.shareButton}
-                            color="violet"
-                            disabled={!this.haveLock()}
-                            onClick={() => {
-                              this.setState({
-                                isFileShareModalOpen: true,
-                              });
-                            }}
-                            leftSection={<IconFile />}
-                          >
-                            File
-                          </Button>
-                        )}
+                      {!this.localStreamToPublish && !sharer && (
+                        <Button
+                          className={styles.shareButton}
+                          color="violet"
+                          disabled={!this.haveLock()}
+                          onClick={() => {
+                            this.setState({
+                              isFileShareModalOpen: true,
+                            });
+                          }}
+                          leftSection={<IconFile />}
+                        >
+                          File
+                        </Button>
+                      )}
                       {this.state.uploadController && (
                         <Button
                           color="red"
@@ -2457,11 +2198,7 @@ export class App extends React.Component<AppProps, AppState> {
                               }}
                             >
                               <Loader />
-                              <div>
-                                {this.playingVBrowser()
-                                  ? "Launching virtual browser. This can take up to a minute."
-                                  : ""}
-                              </div>
+                              <div></div>
                             </div>
                           )}
                           {!this.state.loading && !this.state.roomMedia && (
@@ -2478,8 +2215,8 @@ export class App extends React.Component<AppProps, AppState> {
                                 color="red"
                                 title="It doesn't look like this is a media file!"
                               >
-                                Maybe you meant to launch a VBrowser if you're
-                                trying to visit a web page?
+                                Please choose a direct media URL or supported
+                                stream.
                               </Alert>
                             )}
                         </div>
@@ -2499,42 +2236,21 @@ export class App extends React.Component<AppProps, AppState> {
                       allow="autoplay"
                       src="https://www.youtube.com/embed/?enablejsapi=1&controls=0&rel=0"
                     />
-                    {this.playingVBrowser() &&
-                    this.getVBrowserPass() &&
-                    this.getVBrowserHost() ? (
-                      <VBrowser
-                        username={clientId}
-                        password={this.getVBrowserPass()}
-                        hostname={this.getVBrowserHost()}
-                        controlling={this.state.controller === clientId}
-                        resolution={this.state.vBrowserResolution}
-                        quality={this.state.vBrowserQuality}
-                        doPlay={this.localPlay}
-                        setResolution={(data: string) =>
-                          this.setState({ vBrowserResolution: data })
-                        }
-                        setQuality={(data: string) => {
-                          this.setState({ vBrowserQuality: data });
-                        }}
-                        isMobile={isMobile()}
-                      />
-                    ) : (
-                      <video
-                        style={{
-                          display:
-                            (this.usingNative() && !this.state.loading) ||
-                            this.state.fullScreen
-                              ? "block"
-                              : "none",
-                          width: "100%",
-                          maxHeight: VIDEO_MAX_HEIGHT_CSS,
-                        }}
-                        id="leftVideo"
-                        onEnded={(e) => this.onVideoEnded(e.currentTarget.src)}
-                        playsInline
-                        onClick={this.roomTogglePlay}
-                      ></video>
-                    )}
+                    <video
+                      style={{
+                        display:
+                          (this.usingNative() && !this.state.loading) ||
+                          this.state.fullScreen
+                            ? "block"
+                            : "none",
+                        width: "100%",
+                        maxHeight: VIDEO_MAX_HEIGHT_CSS,
+                      }}
+                      id="leftVideo"
+                      onEnded={(e) => this.onVideoEnded(e.currentTarget.src)}
+                      playsInline
+                      onClick={this.roomTogglePlay}
+                    ></video>
                     {Boolean(this.state.total) && (
                       <div
                         style={{
@@ -2562,6 +2278,19 @@ export class App extends React.Component<AppProps, AppState> {
                   </div>
                 </div>
                 {this.state.roomMedia && controls}
+                {this.state.state === "connected" && (
+                  <VideoChat
+                    socket={this.socket}
+                    participants={this.state.participants}
+                    nameMap={this.state.nameMap}
+                    pictureMap={this.state.pictureMap}
+                    tsMap={this.state.tsMap}
+                    rosterUpdateTS={this.state.rosterUpdateTS}
+                    owner={this.state.owner}
+                    getLeaderTime={this.getLeaderTime}
+                    compact
+                  />
+                )}
                 {!isMobile() && (
                   <div className={styles.expandButton}>
                     <ActionIcon
@@ -2633,63 +2362,6 @@ export class App extends React.Component<AppProps, AppState> {
                 />
                 <InviteButton />
               </div>
-              <div style={{ display: "flex", gap: "4px" }}>
-                <Button
-                  color="grey"
-                  onClick={() =>
-                    this.setState({
-                      showPeopleColumn: !this.state.showPeopleColumn,
-                    })
-                  }
-                  fullWidth
-                  leftSection={<IconUsersGroup />}
-                  rightSection={
-                    <Badge circle>{this.state.participants.length}</Badge>
-                  }
-                >
-                  People
-                </Button>
-                <Button
-                  color="grey"
-                  title="Settings"
-                  fullWidth
-                  onClick={() => {
-                    this.setSettingsModalOpen(true);
-                  }}
-                  leftSection={<IconSettings />}
-                >
-                  Settings
-                </Button>
-              </div>
-              {this.state.state === "connected" && (
-                <div
-                  style={{
-                    position: "absolute",
-                    background: "rgba(10, 10, 10, 0.6)",
-                    zIndex: 200,
-                    left: 0,
-                    top: 76,
-                    height: this.state.showPeopleColumn
-                      ? "calc(100% - 120px)"
-                      : "0%",
-                    width: "100%",
-                    overflowY: "auto",
-                    // visibility: this.state.showPeopleColumn ? 'visible' : 'hidden',
-                    transition: "height ease-out 0.5s",
-                  }}
-                >
-                  <VideoChat
-                    socket={this.socket}
-                    participants={this.state.participants}
-                    nameMap={this.state.nameMap}
-                    pictureMap={this.state.pictureMap}
-                    tsMap={this.state.tsMap}
-                    rosterUpdateTS={this.state.rosterUpdateTS}
-                    owner={this.state.owner}
-                    getLeaderTime={this.getLeaderTime}
-                  />
-                </div>
-              )}
               <Chat
                 chat={this.state.chat}
                 nameMap={this.state.nameMap}

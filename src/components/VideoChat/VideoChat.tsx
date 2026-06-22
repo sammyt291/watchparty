@@ -30,6 +30,7 @@ interface VideoChatProps {
   hide?: boolean;
   owner: string | undefined;
   getLeaderTime: () => number;
+  compact?: boolean;
 }
 
 export class VideoChat extends React.Component<VideoChatProps> {
@@ -263,6 +264,43 @@ export class VideoChat extends React.Component<VideoChatProps> {
       position: "relative",
     };
     const selfId = getOrCreateClientId();
+    if (this.props.compact) {
+      return (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "6px",
+            padding: "4px",
+          }}
+        >
+          {participants.map((p) => (
+            <div
+              key={p.id}
+              title={p.id}
+              style={{
+                background: "rgba(255, 255, 255, 0.08)",
+                border: "1px solid rgba(255, 255, 255, 0.12)",
+                borderRadius: "999px",
+                color: softWhite,
+                fontSize: "12px",
+                fontWeight: 700,
+                maxWidth: "220px",
+                overflow: "hidden",
+                padding: "4px 8px",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {nameMap[p.id] || p.id}
+              <span style={{ opacity: 0.7, paddingLeft: "6px" }}>
+                {p.pingMs == null ? "…" : `${p.pingMs}ms`}
+              </span>
+            </div>
+          ))}
+        </div>
+      );
+    }
     return (
       <div
         style={{
