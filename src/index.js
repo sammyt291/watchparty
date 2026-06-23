@@ -4,8 +4,6 @@ const app = document.querySelector("#app");
 const LAN_HOST_ALIAS_SUFFIX = "sslip.io";
 redirectIpHostToDnsAlias();
 const serverHost = location.origin;
-const CLOCK_SYNC_URL = "https://timeapi.io/api/time/current/zone?timeZone=UTC";
-const CLOCK_SYNC_SAMPLE_LIMIT = 5;
 const roomId = getRoomId();
 let socket = null;
 let playlist = [];
@@ -17,8 +15,6 @@ let ignorePlayerEvents = false;
 let ytReady = false;
 let pingStart = 0;
 let pingSamples = [];
-let clockOffsetMs = 0;
-let clockSyncSamples = [];
 let playbackUnlocked = false;
 let syncStatus = "Pending";
 let syncTimer = null;
@@ -76,14 +72,17 @@ function renderRoom(id) {
     socket?.emit("pongMs", ping);
   });
   setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 500);
-  pollNtpClock();
-  setInterval(pollNtpClock, 60_000);
   byId("playPause").onclick = togglePlay;
   byId("seek").oninput = seek;
+  byId("urlForm").onsubmit = handleUrlFormSubmit;
   byId("urlInput").onkeydown = handleUrlInputKeydown;
   byId("enablePlayback").onclick = unlockPlayback;
   updatePlaybackGate();
   loadYouTubeApi();
+}
+function handleUrlFormSubmit(event) {
+  event.preventDefault();
+  addUrl();
 }
 function handleUrlInputKeydown(event) {
   if (event.isComposing || (event.key !== "Enter" && event.code !== "Enter")) return;
@@ -206,8 +205,8 @@ function localPlayback(next) { return { ...next, startDelayMs: Math.max(0, next.
 function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length / 2 : 0; }
 function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
-  if (Number.isFinite(playback.startTime)) return playback.startTime + Math.max(0, Date.now() - playback.updatedAt - (playback.startDelayMs || 0)) / 1000;
-  return playback.time + (Date.now() - playback.updatedAt + avgPing()) / 1000;
+  const elapsedAfterScheduledStartMs = Date.now() - playback.updatedAt - (playback.startDelayMs || 0);
+  return playback.time + Math.max(0, elapsedAfterScheduledStartMs) / 1000;
 }
 function schedulePlaybackStart() {
   const delay = Math.max(0, playback.startDelayMs || 0);
