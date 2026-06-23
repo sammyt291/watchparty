@@ -115,6 +115,12 @@ function syncFromPlayer(e) {
   if (ignorePlayerEvents) return;
   if (e.data === window.YT?.PlayerState.ENDED) emitPlayback(false, 0);
 }
+function onYouTubeError(e) {
+  const item = playlist.find((i) => i.id === playback.itemId);
+  const watchUrl = item?.url || (currentVideoId ? `https://www.youtube.com/watch?v=${currentVideoId}` : "https://www.youtube.com");
+  byId("video").insertAdjacentHTML("beforeend", `<a class="youtube-fallback" href="${escapeHtml(watchUrl)}" target="_blank" rel="noopener">Open this video on YouTube</a>`);
+  console.warn("YouTube player error", e?.data);
+}
 function togglePlay() { unlockPlayback(); emitPlayback(!playback.playing); }
 function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
 setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); }, 500);
