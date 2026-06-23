@@ -13,7 +13,12 @@ const rooms = new Map();
 const SYNC_CHECK_INTERVAL_MS = 1000;
 const SYNC_TARGET_TOLERANCE_MS = 50;
 const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 5;
-const SYNC_ADJUSTMENT_INITIAL_STEP_MS = 50;
+const SYNC_ADJUSTMENT_PID_KP = 1.25;
+const SYNC_ADJUSTMENT_PID_KI = 0.2;
+const SYNC_ADJUSTMENT_PID_KD = 0.35;
+const SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS = 1.5;
+const SYNC_ADJUSTMENT_MIN_SEEK_MS = 80;
+const SYNC_ADJUSTMENT_MAX_EXTRA_SEEK_MS = 750;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -42,7 +47,7 @@ io.on("connection", (socket) => {
   const room = getRoom(roomId);
   const ip = getIp(socket.handshake.address);
   const name = safeName(String(socket.handshake.query.name || ""));
-  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0, syncHistory: null, lastRequestedSkipAhead: null });
+  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0, syncHistory: null });
   socket.join(roomId);
   socket.emit("state", serializeForSocket(room, socket.id));
   broadcastUsers(roomId);
@@ -122,7 +127,6 @@ io.on("connection", (socket) => {
         user.adjustedAttempt = 0;
         user.seekOffset = null;
         user.syncHistory = null;
-        user.lastRequestedSkipAhead = null;
       }
     }
     room.playback = {
@@ -211,14 +215,13 @@ function markRoomPausedInSync(room) {
 function checkRoomSync() {
   const startedAt = Date.now();
   for (const [roomId, room] of rooms) {
-    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress) continue;
+    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress || roomHasNoSyncUser(room)) continue;
     room.adjustmentAttempt = 0;
     room.syncCheckInProgress = true;
     for (const user of room.users.values()) {
       user.adjustedCycle = null;
       user.adjustedAttempt = 0;
       user.syncHistory = null;
-      user.lastRequestedSkipAhead = null;
     }
     io.to(roomId).emit("syncCheck", { itemId: room.playback.itemId, cycle: room.adjustmentCycle, attempt: room.adjustmentAttempt });
     setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.adjustmentAttempt, room.playback.itemId), 750);
@@ -254,9 +257,7 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     user.adjustedCycle = cycle;
     user.adjustedAttempt = attempt + 1;
     adjusted = true;
-    const directSkipAhead = computeDirectSyncAdjustment(user, skipAhead);
-    const requestedSkipAhead = directSkipAhead ?? skipAhead + (attempt === 0 ? secondsFromMs(SYNC_ADJUSTMENT_INITIAL_STEP_MS) : 0);
-    user.lastRequestedSkipAhead = requestedSkipAhead;
+    const requestedSkipAhead = computePidSyncAdjustment(user, skipAhead);
     if (measurement) measurement.nextRequestedSkipAhead = requestedSkipAhead;
     io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, skipAhead: requestedSkipAhead });
   }
@@ -286,32 +287,42 @@ function recordSyncMeasurement(user, cycle, attempt, offset) {
   }
 
   const previousMeasurement = user.syncHistory.measurements[user.syncHistory.measurements.length - 1];
-  const lastRequestedSkipAhead = Number.isFinite(user.lastRequestedSkipAhead) ? user.lastRequestedSkipAhead : null;
+  const lag = -offset;
+  const previousLag = Number.isFinite(previousMeasurement?.lag) ? previousMeasurement.lag : null;
+  const previousIntegral = Number.isFinite(previousMeasurement?.integral) ? previousMeasurement.integral : 0;
   const measurement = {
     attempt,
     offset,
+    lag,
     previousOffset: previousMeasurement?.offset ?? null,
-    lastRequestedSkipAhead,
-    residual: -offset,
+    integral: clamp(previousIntegral + lag, -SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS, SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS),
+    derivative: Number.isFinite(previousLag) ? lag - previousLag : 0,
   };
   user.syncHistory.measurements.push(measurement);
   user.syncHistory.measurements = user.syncHistory.measurements.slice(-MAX_SYNC_ADJUSTMENT_ATTEMPTS - 1);
   return measurement;
 }
-function computeDirectSyncAdjustment(user, currentLag) {
+function computePidSyncAdjustment(user, currentLag) {
   const measurements = user.syncHistory?.measurements || [];
   const measurement = measurements[measurements.length - 1];
-  if (!measurement || !Number.isFinite(measurement.previousOffset) || !Number.isFinite(measurement.lastRequestedSkipAhead) || measurement.lastRequestedSkipAhead <= 0) return null;
+  if (!measurement) return currentLag;
 
-  const previousLag = -measurement.previousOffset;
-  const observedImprovement = previousLag - currentLag;
-  const responseRatio = observedImprovement / measurement.lastRequestedSkipAhead;
-  measurement.responseRatio = responseRatio;
-  if (!Number.isFinite(responseRatio) || responseRatio <= 0) return null;
+  const proportional = SYNC_ADJUSTMENT_PID_KP * currentLag;
+  const integral = SYNC_ADJUSTMENT_PID_KI * measurement.integral;
+  const derivative = SYNC_ADJUSTMENT_PID_KD * measurement.derivative;
+  const requestedSkipAhead = proportional + integral + derivative;
+  const maxSeek = currentLag + secondsFromMs(SYNC_ADJUSTMENT_MAX_EXTRA_SEEK_MS);
+  const minSeek = Math.min(maxSeek, currentLag + secondsFromMs(SYNC_ADJUSTMENT_MIN_SEEK_MS));
 
-  const directSkipAhead = currentLag / responseRatio;
-  if (!Number.isFinite(directSkipAhead) || directSkipAhead <= 0) return null;
-  return Math.min(directSkipAhead, currentLag);
+  measurement.pid = { proportional, integral, derivative };
+  if (!Number.isFinite(requestedSkipAhead)) return minSeek;
+  return clamp(requestedSkipAhead, minSeek, maxSeek);
+}
+function roomHasNoSyncUser(room) {
+  return [...room.users.values()].some((user) => user.syncStatus === "No Sync");
+}
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 function adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) {
   const position = user.position;
