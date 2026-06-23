@@ -10,9 +10,9 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
-const PLAYBACK_START_SAFETY_MARGIN_MS = 50;
+const PLAYBACK_START_SAFETY_MARGIN_MS = 30;
 const PLAYBACK_START_PING_MULTIPLIER = 2;
-const MIN_PLAYBACK_START_LEAD_MS = 250;
+const MIN_PLAYBACK_START_LEAD_MS = 80;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -164,7 +164,7 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
     ? Math.max(MIN_PLAYBACK_START_LEAD_MS, (maxOneWayPing * PLAYBACK_START_PING_MULTIPLIER) + PLAYBACK_START_SAFETY_MARGIN_MS)
     : 0;
   const scheduledPlayback = basePlayback.playing
-    ? { ...basePlayback, time: basePlayback.time + secondsFromMs(playbackLeadMs), updatedAt: Date.now() + playbackLeadMs }
+    ? { ...basePlayback, updatedAt: Date.now() + playbackLeadMs }
     : basePlayback;
 
   for (const user of usersByPing) {
@@ -204,7 +204,6 @@ function clearPlaybackTimers(room) {
   for (const timer of room.playbackTimers || []) clearTimeout(timer);
   room.playbackTimers = [];
 }
-function secondsFromMs(milliseconds) { return milliseconds / 1000; }
 function logRooms() {
   console.clear();
   console.log("Rooms");
