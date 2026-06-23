@@ -84,11 +84,12 @@ function loadCurrent() {
   paintQueue();
   if (!item) return;
   if (item.provider === "youtube") loadYoutube(item.url);
-  else if (item.provider === "facebook") { ytPlayer = null; currentVideoId = null; byId("video").innerHTML = `<iframe src="https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(item.url)}&show_text=false" allow="autoplay; encrypted-media" allowfullscreen></iframe>`; ensureSyncOverlay(); }
+  else if (item.provider === "facebook") { ytPlayer = null; currentVideoId = null; byId("video").innerHTML = `<iframe src="https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(item.url)}&show_text=false" allow="autoplay; encrypted-media" allowfullscreen style="display: block;"></iframe>`; ensurePlayerIframesDisplayBlock(); ensureSyncOverlay(); }
 }
 function ensurePlayerHost(videoId) {
   const embedUrl = youtubeEmbedUrl(videoId);
   byId("video").innerHTML = `<iframe id="player" class="youtube-player" src="${escapeHtml(embedUrl)}" title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" style="display: block;"></iframe>`;
+  ensurePlayerIframesDisplayBlock();
   ensureSyncOverlay();
 }
 function loadYoutube(url) {
@@ -193,11 +194,18 @@ function sizeYouTubeIframe() {
   if (!iframe) return;
   iframe.classList.add("youtube-iframe");
   iframe.style.display = "block";
+  ensurePlayerIframesDisplayBlock();
   iframe.setAttribute("allow", "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share");
   iframe.setAttribute("allowfullscreen", "");
   iframe.removeAttribute("width");
   iframe.removeAttribute("height");
 }
+function ensurePlayerIframesDisplayBlock() {
+  document.querySelectorAll('#video iframe, iframe[src*="/embed/"]').forEach((iframe) => {
+    iframe.style.display = "block";
+  });
+}
+
 function getRoomId() { return location.pathname.match(/^\/watch\/([^/]+)/)?.[1] || location.pathname.match(/^\/r\/([^/]+)/)?.[1] || ""; }
 function go(id) { location.href = `/watch/${id.replace(/[^a-zA-Z0-9_-]/g, "")}`; }
 function byId(id) { return document.getElementById(id); }
