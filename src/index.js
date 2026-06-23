@@ -18,6 +18,8 @@ let playbackUnlocked = false;
 let syncStatus = "Pending";
 let pendingLocalPlaylist = false;
 let syncAdjustmentKey = null;
+let syncOverlayMode = "initial";
+const CLIENT_SYNC_TARGET_TOLERANCE_MS = 50;
 const VOLUME_STORAGE_KEY = "watchparty:volume";
 let playerVolume = readStoredVolume();
 
@@ -213,7 +215,7 @@ function togglePlay() { unlockPlayback(); emitPlayback(!playback.playing); }
 function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
 function changeVolume() { playerVolume = Number(byId("volume").value); localStorage.setItem(VOLUME_STORAGE_KEY, String(playerVolume)); setPlayerVolume(); }
 function setPlayerVolume() { if (hasYtMethod("setVolume")) ytPlayer.setVolume(playerVolume); }
-setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); }, 500);
+setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); updateClientSyncHappiness(); }, 500);
 function emitPlaylist() { pendingLocalPlaylist = true; socket?.emit("playlist", playlist); paintQueue(); loadCurrent(); }
 function emitPlayback(playing = playback.playing, time = getYtTime() || playback.time, itemId = playback.itemId) { setSyncStatus("Pending"); socket?.emit("playback", { itemId, playing, time }); }
 function playPlaylistItem(itemId) { if (!itemId || itemId === playback.itemId) return; unlockPlayback(); emitPlayback(true, 0, itemId); }
@@ -227,9 +229,11 @@ function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
   return playback.time + Math.max(0, Date.now() - playback.updatedAt) / 1000;
 }
-function beginSync() {
+function beginSync(mode = "initial") {
   if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
+  syncOverlayMode = mode;
   setSyncStatus("Syncing");
+  updateClientSyncHappiness();
 }
 function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); updateSyncOverlay(); }
 function ensureSyncOverlay() {
@@ -238,7 +242,10 @@ function ensureSyncOverlay() {
 }
 function updateSyncOverlay() {
   ensureSyncOverlayElement();
-  byId("syncOverlay")?.classList.toggle("is-hidden", !(syncStatus === "Syncing" && playback.playing && !isPlaybackGateVisible()));
+  const overlay = byId("syncOverlay");
+  if (!overlay) return;
+  overlay.classList.toggle("is-hidden", !(syncStatus === "Syncing" && playback.playing && !isPlaybackGateVisible()));
+  overlay.dataset.mode = syncOverlayMode;
 }
 function ensureSyncOverlayElement() {
   if (!byId("syncOverlay") && byId("video")) byId("video").insertAdjacentHTML("beforeend", `<div id="syncOverlay" class="sync-overlay is-hidden" aria-live="polite">Syncing playback…</div>`);
@@ -255,7 +262,15 @@ function applyServerSyncAdjustment(adjustment) {
   const skipAhead = Number(adjustment.skipAhead);
   if (!Number.isFinite(skipAhead) || skipAhead <= 0.01 || !isYouTubePlayer() || !hasYtMethod("seekTo")) return;
   syncAdjustmentKey = adjustmentKey;
+  beginSync("adjustment");
   withIgnoredPlayerEvents(() => ytPlayer.seekTo(getYtTime() + skipAhead, true));
+  setTimeout(updateClientSyncHappiness, 100);
+}
+function updateClientSyncHappiness() {
+  if (syncStatus !== "Syncing" || !playback.playing || isPlaybackGateVisible()) return;
+  if (!isYouTubePlayer() || !ytReady) return;
+  const offsetMs = Math.abs(getYtTime() - targetPlaybackTime()) * 1000;
+  if (offsetMs <= CLIENT_SYNC_TARGET_TOLERANCE_MS) setSyncStatus("Sync");
 }
 function formatSeekOffsetMs(offset) {
   const seconds = Number(offset);
