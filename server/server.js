@@ -13,10 +13,11 @@ const rooms = new Map();
 const SYNC_CHECK_INTERVAL_MS = 1000;
 const SYNC_TARGET_TOLERANCE_MS = 50;
 const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 5;
-const SYNC_ADJUSTMENT_GAIN = 0.85;
+const SYNC_ADJUSTMENT_GAIN = 1;
 const SYNC_ADJUSTMENT_WORSENING_GAIN = 0.45;
 const SYNC_ADJUSTMENT_SIGN_FLIP_GAIN = 0.6;
 const SYNC_ADJUSTMENT_MAX_STEP_SECONDS = 2;
+const SYNC_ADJUSTMENT_LARGE_OFFSET_SECONDS = 2;
 const SYNC_LATENCY_UNCERTAINTY_FACTOR = 1;
 app.use(cors());
 app.use(express.json());
@@ -373,10 +374,15 @@ function computeSyncAdjustment(user, targetSeekDelta) {
 
   const maxGain = absTarget < 0.25 ? 0.85 : 1;
   const effectiveGain = clamp(gain, 0, maxGain);
-  const maxStep = Math.min(absTarget, SYNC_ADJUSTMENT_MAX_STEP_SECONDS);
+  const maxStep = syncAdjustmentMaxStepSeconds(absTarget, previousOffset != null);
   const requestedSeekDelta = Math.sign(targetSeekDelta) * Math.min(maxStep, absTarget * effectiveGain);
-  measurement.adjustment = { gain: effectiveGain, configuredGain: gain, requestedSeekDelta };
+  measurement.adjustment = { gain: effectiveGain, configuredGain: gain, maxStep, requestedSeekDelta };
   return requestedSeekDelta;
+}
+function syncAdjustmentMaxStepSeconds(absTarget, hasPreviousMeasurement) {
+  if (!Number.isFinite(absTarget)) return SYNC_ADJUSTMENT_MAX_STEP_SECONDS;
+  if (absTarget >= SYNC_ADJUSTMENT_LARGE_OFFSET_SECONDS && !hasPreviousMeasurement) return absTarget;
+  return Math.min(absTarget, Math.max(SYNC_ADJUSTMENT_MAX_STEP_SECONDS, absTarget * 0.75));
 }
 function roomUsersAreSyncSettled(room) {
   return [...room.users.values()].every((user) => user.syncSettled);
