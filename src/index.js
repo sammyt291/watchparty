@@ -267,11 +267,12 @@ function getCurrentSeekTime() { return isYouTubePlayer() ? getYtTime() : targetP
 function applyServerSyncAdjustment(adjustment) {
   const adjustmentKey = `${adjustment?.cycle ?? ""}:${adjustment?.attempt ?? ""}`;
   if (!adjustment || adjustment.itemId !== playback.itemId || syncAdjustmentKey === adjustmentKey) return;
-  const skipAhead = Number(adjustment.skipAhead);
-  if (!Number.isFinite(skipAhead) || skipAhead <= 0.01 || !isYouTubePlayer() || !hasYtMethod("seekTo")) return;
+  const legacySkipAhead = Number(adjustment.skipAhead);
+  const seekDelta = Number.isFinite(Number(adjustment.seekDelta)) ? Number(adjustment.seekDelta) : legacySkipAhead;
+  if (!Number.isFinite(seekDelta) || Math.abs(seekDelta) <= 0.01 || !isYouTubePlayer() || !hasYtMethod("seekTo")) return;
   syncAdjustmentKey = adjustmentKey;
   beginSync("adjustment");
-  withIgnoredPlayerEvents(() => ytPlayer.seekTo(getYtTime() + skipAhead, true));
+  withIgnoredPlayerEvents(() => ytPlayer.seekTo(Math.max(0, getYtTime() + seekDelta), true));
   setTimeout(updateClientSyncHappiness, 100);
 }
 function updateClientSyncHappiness() {
