@@ -19,6 +19,8 @@ const SYNC_ADJUSTMENT_SIGN_FLIP_GAIN = 0.6;
 const SYNC_ADJUSTMENT_MAX_STEP_SECONDS = 2;
 const SYNC_ADJUSTMENT_LARGE_OFFSET_SECONDS = 2;
 const SYNC_LATENCY_UNCERTAINTY_FACTOR = 1;
+const PLAYBACK_START_SAFETY_MARGIN_MS = 50;
+const POST_PLAYBACK_SYNC_SETTLE_MS = 250;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -138,10 +140,7 @@ io.on("connection", (socket) => {
       time: Number.isFinite(playback.time) ? Math.max(0, Number(playback.time)) : room.playback.time,
       updatedAt: Date.now(),
     };
-    if (startsPlaybackCycle) {
-      markPlaybackOriginInSync(room, socket.id);
-      broadcastUsers(roomId);
-    }
+    if (startsPlaybackCycle) broadcastUsers(roomId);
     if (!nextPlaying && room.playback.itemId) {
       room.syncCheckInProgress = false;
       room.syncAnchorUserId = null;
@@ -171,7 +170,7 @@ setInterval(checkRoomSync, SYNC_CHECK_INTERVAL_MS);
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
-    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false, syncAnchorUserId: null, syncReferenceUserId: null };
+    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], syncCheckTimer: null, adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false, syncAnchorUserId: null, syncReferenceUserId: null };
     rooms.set(id, room);
   }
   return room;
@@ -184,21 +183,25 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
   clearPlaybackTimers(room);
   const usersByPing = [...room.users.values()].sort((a, b) => (b.ping || 0) - (a.ping || 0));
   const maxOneWayPing = usersByPing[0]?.ping || 0;
-  if (basePlayback.playing) basePlayback.updatedAt = Date.now() + maxOneWayPing;
+  const scheduledStartAt = basePlayback.playing ? Date.now() + maxOneWayPing + PLAYBACK_START_SAFETY_MARGIN_MS : null;
+  if (basePlayback.playing) basePlayback.updatedAt = scheduledStartAt;
 
   for (const user of usersByPing) {
     const userOneWayPing = user.ping || 0;
-    const sendDelayMs = basePlayback.playing ? Math.max(0, maxOneWayPing - userOneWayPing) : 0;
+    const sendDelayMs = basePlayback.playing ? Math.max(0, scheduledStartAt - Date.now() - userOneWayPing) : 0;
     const sendPlayback = () => {
       if (!rooms.get(roomId)?.users.has(user.id)) return;
-      io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, true));
+      const remainingStartDelayMs = basePlayback.playing ? Math.max(0, scheduledStartAt - Date.now() - userOneWayPing) : 0;
+      io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, true, remainingStartDelayMs));
     };
 
     if (sendDelayMs === 0) sendPlayback();
     else room.playbackTimers.push(setTimeout(sendPlayback, sendDelayMs));
   }
+
+  if (basePlayback.playing) schedulePostPlaybackSyncCheck(roomId, room, maxOneWayPing);
 }
-function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, isScheduledPlayback = false) {
+function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, isScheduledPlayback = false, startDelayMs = 0) {
   const user = room.users.get(socketId);
   const now = Date.now();
   const elapsedMs = basePlayback.playing && !isScheduledPlayback ? Math.max(0, now - basePlayback.updatedAt + (user?.ping || 0)) : 0;
@@ -206,7 +209,8 @@ function playbackForUser(room, socketId, basePlayback = room.playback, originId 
     ...basePlayback,
     originId,
     time: Math.max(0, basePlayback.time + elapsedMs / 1000),
-    updatedAt: now,
+    updatedAt: now + Math.max(0, Math.round(startDelayMs)),
+    startDelayMs: Math.max(0, Math.round(startDelayMs)),
   };
 }
 function markPlaybackOriginInSync(room, socketId) {
@@ -401,9 +405,18 @@ function adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) {
   const elapsedSinceReceiveSeconds = position.playing ? Math.max(0, Date.now() - position.receivedAt) / 1000 : 0;
   return Math.max(0, position.time + receiveDelaySeconds + elapsedSinceReceiveSeconds);
 }
+function schedulePostPlaybackSyncCheck(roomId, room, maxOneWayPing) {
+  if (room.syncCheckTimer) clearTimeout(room.syncCheckTimer);
+  room.syncCheckTimer = setTimeout(() => {
+    room.syncCheckTimer = null;
+    checkRoomSync();
+  }, maxOneWayPing + PLAYBACK_START_SAFETY_MARGIN_MS + POST_PLAYBACK_SYNC_SETTLE_MS);
+}
 function clearPlaybackTimers(room) {
   for (const timer of room.playbackTimers || []) clearTimeout(timer);
   room.playbackTimers = [];
+  if (room.syncCheckTimer) clearTimeout(room.syncCheckTimer);
+  room.syncCheckTimer = null;
 }
 function logRooms() {
   console.clear();

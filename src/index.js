@@ -19,6 +19,7 @@ let syncStatus = "Pending";
 let pendingLocalPlaylist = false;
 let syncAdjustmentKey = null;
 let syncOverlayMode = "initial";
+let playbackStartTimer = null;
 const CLIENT_SYNC_TARGET_TOLERANCE_MS = 50;
 const VOLUME_STORAGE_KEY = "watchparty:volume";
 let playerVolume = readStoredVolume();
@@ -68,13 +69,11 @@ function renderRoom(id) {
   socket.on("playback", (next) => {
     const wasPlaying = playback.playing;
     const changed = next.itemId !== playback.itemId;
-    const originatedHere = next.originId === socket?.id;
     playback = localPlayback(next);
     updatePlaybackGate();
-    if (originatedHere) setSyncStatus("Sync");
-    else beginSync();
+    beginSync();
     if (changed) loadCurrent();
-    else applyPlayback(true, { skipSeek: originatedHere || (!wasPlaying && playback.playing) });
+    else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing });
   });
   socket.on("users", (next) => { users = next; syncOwnStatusFromUsers(); paintUsers(); });
   socket.on("syncCheck", (check) => {
@@ -201,7 +200,15 @@ function onYouTubeReady() {
 }
 function applyPlayback(fineAdjust = false, options = {}) {
   byId("playPause").textContent = playback.playing ? "Pause" : "Play";
+  clearPlaybackStartTimer();
   if (!ytReady || !isYouTubePlayer()) return;
+
+  const startDelayMs = playback.playing ? Math.max(0, playback.updatedAt - Date.now()) : 0;
+  if (startDelayMs > 0) {
+    if (hasYtMethod("pauseVideo")) withIgnoredPlayerEvents(() => ytPlayer.pauseVideo());
+    playbackStartTimer = setTimeout(() => { playbackStartTimer = null; applyPlayback(fineAdjust, options); }, startDelayMs);
+    return;
+  }
 
   const t = targetPlaybackTime();
   withIgnoredPlayerEvents(() => {
@@ -209,6 +216,11 @@ function applyPlayback(fineAdjust = false, options = {}) {
     if ((!playback.playing || !playbackUnlocked) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
     if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) ytPlayer.playVideo();
   });
+}
+function clearPlaybackStartTimer() {
+  if (!playbackStartTimer) return;
+  clearTimeout(playbackStartTimer);
+  playbackStartTimer = null;
 }
 function syncFromPlayer(e) {
   sizeYouTubeIframe();
@@ -221,7 +233,7 @@ function onYouTubeError(e) {
   byId("video").insertAdjacentHTML("beforeend", `<a class="youtube-fallback" href="${escapeHtml(watchUrl)}" target="_blank" rel="noopener">Open this video on YouTube</a>`);
   console.warn("YouTube player error", e?.data);
 }
-function togglePlay() { unlockPlayback(); emitPlayback(!playback.playing); }
+function togglePlay() { playbackUnlocked = true; updatePlaybackGate(); emitPlayback(!playback.playing); }
 function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
 function changeVolume() { playerVolume = Number(byId("volume").value); localStorage.setItem(VOLUME_STORAGE_KEY, String(playerVolume)); setPlayerVolume(); }
 function setPlayerVolume() { if (hasYtMethod("setVolume")) ytPlayer.setVolume(playerVolume); }
@@ -234,7 +246,7 @@ function editName() { const next = prompt("Edit your display name", localStorage
 function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); beginSync(); applyPlayback(true); }
 function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", !isPlaybackGateVisible()); }
 function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing && Boolean(playback.itemId); }
-function localPlayback(next) { return { ...next, updatedAt: Date.now() }; }
+function localPlayback(next) { return { ...next, updatedAt: Date.now() + Math.max(0, Number(next?.startDelayMs) || 0) }; }
 function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
   return playback.time + Math.max(0, Date.now() - playback.updatedAt) / 1000;
