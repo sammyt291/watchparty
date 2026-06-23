@@ -44,7 +44,7 @@ function renderRoom(id) {
     pingSamples.push(ping);
     pingSamples = pingSamples.slice(-10);
     socket?.emit("pongMs", ping);
-    if (syncStatus === "Syncing" && pingSamples.length >= 3 && !isPlaybackGateVisible()) applyFineSyncAdjustment();
+    if (syncStatus === "Syncing" && pingSamples.length >= 3 && !isPlaybackGateVisible() && !isCurrentPlaybackOwner()) applyFineSyncAdjustment();
   });
   setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 500);
   byId("playPause").onclick = togglePlay;
@@ -124,7 +124,7 @@ function applyPlayback(fineAdjust = false) {
   withIgnoredPlayerEvents(() => {
     if (hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
     if ((!playback.playing || !playbackUnlocked) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
-    if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) { startCatchupPending = true; ytPlayer.playVideo(); }
+    if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) { startCatchupPending = shouldCatchupOnStart(); ytPlayer.playVideo(); }
   });
 }
 function syncFromPlayer(e) {
@@ -153,6 +153,8 @@ function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing 
 function localPlayback(next) { return { ...next, updatedAt: Date.now() }; }
 function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length : 0; }
 function targetPlaybackTime() { return playback.playing ? playback.time + (Date.now() - playback.updatedAt + avgPing() / 2) / 1000 : playback.time; }
+function isCurrentPlaybackOwner() { return Boolean(playback.originId && playback.originId === socket?.id); }
+function shouldCatchupOnStart() { return playback.playing && playbackUnlocked && !isCurrentPlaybackOwner(); }
 function beginSync() {
   clearTimeout(syncTimer);
   if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
@@ -163,7 +165,7 @@ function applyFineSyncAdjustment() { applyPlayback(true); scheduleSyncedStatus()
 function scheduleStartCatchup() {
   startCatchupPending = false;
   clearTimeout(startCatchupTimer);
-  startCatchupTimer = setTimeout(() => applyFineSyncAdjustment(), Math.min(1000, Math.max(150, avgPing())));
+  startCatchupTimer = setTimeout(() => applyFineSyncAdjustment(), Math.min(4000, Math.max(2500, avgPing() * 2)));
 }
 function scheduleSyncedStatus() {
   clearTimeout(syncTimer);
