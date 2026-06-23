@@ -201,6 +201,7 @@ function sizeYouTubeIframe() {
   ensurePlayerIframesDisplayBlock();
   iframe.setAttribute("allow", "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share");
   iframe.setAttribute("allowfullscreen", "");
+  iframe.referrerPolicy = "origin-when-cross-origin";
   iframe.removeAttribute("width");
   iframe.removeAttribute("height");
 }
@@ -225,6 +226,7 @@ function youtubePlayerVars() {
   return {
     enablejsapi: 1,
     origin: location.origin,
+    widget_referrer: location.href,
     playsinline: 1,
     rel: 0,
     controls: 0,
