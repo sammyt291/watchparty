@@ -169,7 +169,7 @@ function editName() { const next = prompt("Edit your display name", localStorage
 function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); beginSync(); applyPlayback(true); }
 function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", !isPlaybackGateVisible()); }
 function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing && Boolean(playback.itemId); }
-function localPlayback(next) { return { ...next, updatedAt: Date.now() }; }
+function localPlayback(next) { return { ...next, startDelayMs: Math.max(0, (next.startDelayMs || 0) - avgPing()), updatedAt: Date.now() }; }
 function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length : 0; }
 function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
