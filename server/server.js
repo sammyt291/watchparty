@@ -14,6 +14,7 @@ const SYNC_CHECK_INTERVAL_MS = 1000;
 const SYNC_INITIAL_STEP_MS = 100;
 const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 15;
 const SYNC_TARGET_TOLERANCE_MS = 50;
+const SYNC_DEBUG_MODE = true;
 const PLAYBACK_START_SAFETY_MARGIN_MS = 50;
 const POST_PLAYBACK_SYNC_SETTLE_MS = 250;
 app.use(cors());
@@ -44,7 +45,7 @@ io.on("connection", (socket) => {
   const room = getRoom(roomId);
   const ip = getIp(socket.handshake.address);
   const name = safeName(String(socket.handshake.query.name || ""));
-  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0, syncAdjustmentState: null, syncSettled: false });
+  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0, syncAdjustmentState: null, syncAdjustmentStepSeconds: null, syncSettled: false });
   socket.join(roomId);
   socket.emit("state", serializeForSocket(room, socket.id));
   broadcastUsers(roomId);
@@ -127,6 +128,7 @@ io.on("connection", (socket) => {
         user.adjustedAttempt = 0;
         user.seekOffset = null;
         user.syncAdjustmentState = null;
+        user.syncAdjustmentStepSeconds = null;
       }
     }
     room.playback = {
@@ -171,7 +173,18 @@ function getRoom(id) {
   return room;
 }
 function serializeForSocket(room, socketId) { return { playlist: room.playlist, playback: playbackForUser(room, socketId), users: publicUsers(room) }; }
-function publicUsers(room) { return [...room.users.values()].map(({ id, name, ip, ping, syncStatus, seekTime, seekOffset }) => ({ id, name, ip, ping, syncStatus, seekTime, seekOffset })); }
+function publicUsers(room) {
+  return [...room.users.values()].map(({ id, name, ip, ping, syncStatus, seekTime, seekOffset, syncAdjustmentStepSeconds }) => ({
+    id,
+    name,
+    ip,
+    ping,
+    syncStatus,
+    seekTime,
+    seekOffset,
+    ...(SYNC_DEBUG_MODE ? { syncAdjustmentStepSeconds } : {}),
+  }));
+}
 function broadcastUsers(roomId) { const room = rooms.get(roomId); if (room) io.to(roomId).emit("users", publicUsers(room)); }
 function broadcastPlaylist(roomId, room) { io.to(roomId).emit("playlist", room.playlist); }
 function schedulePlayback(roomId, room, basePlayback, originId = null) {
@@ -248,6 +261,7 @@ function checkRoomSync() {
       user.adjustedCycle = null;
       user.adjustedAttempt = 0;
       user.syncAdjustmentState = null;
+      user.syncAdjustmentStepSeconds = null;
     }
     room.syncReferenceUserId = room.syncAnchorUserId;
     io.to(roomId).emit("syncCheck", { itemId: room.playback.itemId, cycle: room.adjustmentCycle, attempt: room.adjustmentAttempt });
@@ -329,6 +343,7 @@ function nextSyncAdjustment(user, cycle, offset, targetSeekDelta) {
       stepSeconds: secondsFromMs(SYNC_INITIAL_STEP_MS),
       direction: Math.sign(targetSeekDelta),
       previousOffset: null,
+      hasOvershot: false,
     };
   }
 
@@ -339,12 +354,14 @@ function nextSyncAdjustment(user, cycle, offset, targetSeekDelta) {
   if (overshot) {
     state.direction *= -1;
     state.stepSeconds /= 2;
+    state.hasOvershot = true;
   }
 
   const seekDelta = state.direction * state.stepSeconds;
+  user.syncAdjustmentStepSeconds = state.stepSeconds;
   state.previousOffset = offset;
 
-  if (!overshot) state.stepSeconds *= 2;
+  if (!overshot && !state.hasOvershot) state.stepSeconds *= 2;
 
   return seekDelta;
 }
