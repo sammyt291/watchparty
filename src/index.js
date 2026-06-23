@@ -20,7 +20,7 @@ let pendingLocalPlaylist = false;
 let syncOverlayMode = "initial";
 let syncCheckTimer = null;
 let scheduledPlaybackTimer = null;
-const SYNC_TIME_TOLERANCE_SECONDS = 0.35;
+const SYNC_TIME_TOLERANCE_SECONDS = 0.08;
 const VOLUME_STORAGE_KEY = "watchparty:volume";
 let playerVolume = readStoredVolume();
 
@@ -206,7 +206,7 @@ function applyPlayback(fineAdjust = false, options = {}) {
     if ((!playback.playing || !playbackUnlocked || startDelayMs > 0) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
     if (playback.playing && playbackUnlocked && startDelayMs === 0 && hasYtMethod("playVideo")) ytPlayer.playVideo();
   });
-  if (startDelayMs > 0) scheduledPlaybackTimer = setTimeout(() => applyPlayback(true, { skipSeek: true }), startDelayMs);
+  if (startDelayMs > 0) scheduledPlaybackTimer = setTimeout(() => applyPlayback(true), startDelayMs);
   scheduleSyncCheck();
 }
 function syncFromPlayer(e) {
@@ -281,6 +281,7 @@ function checkPlaybackSync() {
   if (syncStatus !== "Syncing") return;
   if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
   if (isPlaybackActuallySynced()) { setSyncStatus("Sync"); return; }
+  applyPlayback(true);
   scheduleSyncCheck();
 }
 function isPlaybackActuallySynced() {
