@@ -12,9 +12,10 @@ let playback = { itemId: null, playing: false, time: 0, updatedAt: Date.now() };
 let users = [];
 let ytPlayer = null;
 let currentVideoId = null;
-let suppressPlayerEventsUntil = 0;
+let ignorePlayerEvents = false;
+let ytReady = false;
 let pingStart = 0;
-let playbackUnlocked = false;
+let playbackUnlocked = sessionStorage.getItem("watchparty:playbackUnlocked") === "true";
 
 if (!roomId) renderSplash(); else renderRoom(roomId);
 
@@ -83,41 +84,61 @@ function loadYoutube(url) {
   if (!ytPlayer) {
     ensurePlayerHost();
     currentVideoId = id;
-    ytPlayer = new window.YT.Player("player", { width: "100%", height: "100%", videoId: id, playerVars: { controls: 0, playsinline: 1, rel: 0 }, events: { onReady: applyPlayback, onStateChange: syncFromPlayer } });
+    ytReady = false;
+    ytPlayer = new window.YT.Player("player", { width: "100%", height: "100%", videoId: id, playerVars: { controls: 0, playsinline: 1, rel: 0, enablejsapi: 1, origin: location.origin }, events: { onReady: onYouTubeReady, onStateChange: syncFromPlayer } });
   } else if (currentVideoId !== id) {
     currentVideoId = id;
-    ignorePlayerEvents();
-    ytPlayer.loadVideoById(id, playback.time || 0);
-    setTimeout(applyPlayback, 150);
+    withIgnoredPlayerEvents(() => {
+      if (hasYtMethod("loadVideoById")) ytPlayer.loadVideoById(id, playback.time || 0);
+      else if (hasYtMethod("cueVideoById")) ytPlayer.cueVideoById(id, playback.time || 0);
+    });
+    setTimeout(applyPlayback, 250);
   } else {
     applyPlayback();
   }
 }
+function onYouTubeReady() {
+  ytReady = true;
+  sizeYouTubeIframe();
+  applyPlayback();
+}
 function applyPlayback() {
-  const t = playback.playing ? playback.time + (Date.now() - playback.updatedAt) / 1000 : playback.time;
-  ignorePlayerEvents();
-  ytPlayer?.seekTo(t, true);
-  if (playbackUnlocked || !playback.playing) playback.playing ? ytPlayer?.playVideo() : ytPlayer?.pauseVideo();
   byId("playPause").textContent = playback.playing ? "Pause" : "Play";
+  if (!ytReady || !isYouTubePlayer()) return;
+
+  const t = playback.playing ? playback.time + (Date.now() - playback.updatedAt) / 1000 : playback.time;
+  withIgnoredPlayerEvents(() => {
+    if (hasYtMethod("seekTo")) ytPlayer.seekTo(t, true);
+    if (!playback.playing && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
+    if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) ytPlayer.playVideo();
+  });
 }
 function syncFromPlayer(e) {
-  if (Date.now() < suppressPlayerEventsUntil) return;
-  if (e.data !== window.YT?.PlayerState.PLAYING && e.data !== window.YT?.PlayerState.PAUSED) return;
-  const playing = e.data === window.YT.PlayerState.PLAYING;
-  if (playing === playback.playing) return;
-  emitPlayback(playing);
+  sizeYouTubeIframe();
+  if (ignorePlayerEvents) return;
+  if (e.data === window.YT?.PlayerState.ENDED) emitPlayback(false, 0);
 }
 function togglePlay() { unlockPlayback(); emitPlayback(!playback.playing); }
-function seek() { const duration = ytPlayer?.getDuration() || 0; const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
-setInterval(() => { const d = ytPlayer?.getDuration() || 0; if (d) byId("seek").value = String(((ytPlayer?.getCurrentTime() || 0) / d) * 1000); }, 500);
+function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
+setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); }, 500);
 function emitPlaylist() { socket?.emit("playlist", playlist); paintQueue(); loadCurrent(); }
-function emitPlayback(playing = playback.playing, time = ytPlayer?.getCurrentTime() ?? playback.time, itemId = playback.itemId) { playback = { itemId, playing, time, updatedAt: Date.now() }; socket?.emit("playback", playback); loadCurrent(); }
+function emitPlayback(playing = playback.playing, time = getYtTime() || playback.time, itemId = playback.itemId) { playback = { itemId, playing, time, updatedAt: Date.now() }; socket?.emit("playback", playback); loadCurrent(); }
 function playPlaylistItem(itemId) { if (!itemId || itemId === playback.itemId) return; unlockPlayback(); emitPlayback(true, 0, itemId); }
 function reorder(event, targetId) { event.preventDefault(); event.stopPropagation(); const id = event.dataTransfer?.getData("text/plain"); if (!id || id === targetId) return; const dragged = playlist.find((i) => i.id === id); playlist = playlist.filter((i) => i.id !== id); playlist.splice(playlist.findIndex((i) => i.id === targetId), 0, dragged); emitPlaylist(); }
 function editName() { const next = prompt("Edit your display name", localStorage.getItem("watchparty:name") || ""); if (next) { localStorage.setItem("watchparty:name", next); socket?.emit("setName", next); } }
-function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); applyPlayback(); }
+function unlockPlayback() { playbackUnlocked = true; sessionStorage.setItem("watchparty:playbackUnlocked", "true"); updatePlaybackGate(); applyPlayback(); }
 function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", playbackUnlocked); }
-function ignorePlayerEvents(ms = 1200) { suppressPlayerEventsUntil = Math.max(suppressPlayerEventsUntil, Date.now() + ms); }
+function withIgnoredPlayerEvents(callback) { ignorePlayerEvents = true; callback(); setTimeout(() => { ignorePlayerEvents = false; }, 1000); }
+function isYouTubePlayer() { return ytPlayer && typeof ytPlayer === "object" && hasYtMethod("getIframe"); }
+function hasYtMethod(method) { return typeof ytPlayer?.[method] === "function"; }
+function getYtDuration() { return hasYtMethod("getDuration") ? ytPlayer.getDuration() || 0 : 0; }
+function getYtTime() { return hasYtMethod("getCurrentTime") ? ytPlayer.getCurrentTime() || 0 : 0; }
+function sizeYouTubeIframe() {
+  const iframe = hasYtMethod("getIframe") ? ytPlayer.getIframe() : byId("player")?.querySelector("iframe");
+  iframe?.classList.add("youtube-iframe");
+  iframe?.removeAttribute("width");
+  iframe?.removeAttribute("height");
+}
 function getRoomId() { return location.pathname.match(/^\/watch\/([^/]+)/)?.[1] || location.pathname.match(/^\/r\/([^/]+)/)?.[1] || ""; }
 function go(id) { location.href = `/watch/${id.replace(/[^a-zA-Z0-9_-]/g, "")}`; }
 function byId(id) { return document.getElementById(id); }
