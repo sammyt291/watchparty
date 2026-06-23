@@ -128,6 +128,7 @@ function applyPlayback(fineAdjust = false) {
 }
 function syncFromPlayer(e) {
   sizeYouTubeIframe();
+  if (e.data === window.YT?.PlayerState.PLAYING && startCatchupPending) scheduleStartCatchup();
   if (ignorePlayerEvents) return;
   if (e.data === window.YT?.PlayerState.ENDED) emitPlayback(false, 0);
 }
