@@ -209,7 +209,16 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     const offset = currentTime - furthestTime;
     user.seekOffset = offset;
     const skipAhead = -offset;
-    if (skipAhead <= secondsFromMs(SYNC_TARGET_TOLERANCE_MS) || (user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1)) continue;
+    if (skipAhead <= secondsFromMs(SYNC_TARGET_TOLERANCE_MS)) {
+      user.syncStatus = "Sync";
+      continue;
+    }
+    if (user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1) continue;
+    if (attempt >= MAX_SYNC_ADJUSTMENT_ATTEMPTS) {
+      user.syncStatus = "No Sync";
+      continue;
+    }
+    user.syncStatus = "Syncing";
     user.adjustedCycle = cycle;
     user.adjustedAttempt = attempt + 1;
     adjusted = true;
@@ -217,7 +226,7 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, skipAhead: skipAhead + stepAmount });
   }
   broadcastUsers(roomId);
-  if (adjusted && attempt + 1 < MAX_SYNC_ADJUSTMENT_ATTEMPTS) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
+  if (adjusted) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
 }
 function recheckRoomSync(roomId, cycle, attempt, itemId) {
   setTimeout(() => {
@@ -255,7 +264,7 @@ function safeRoomId(value) { return value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0
 function safeName(value) { return String(value).replace(/[\t\n\r]/g, " ").trim().slice(0, 32) || "Quiet Otter"; }
 function getIp(address) { return address.replace(/^::ffff:/, ""); }
 function cleanItem(item) { return item?.id && item?.url ? { ...item, title: item.title || item.url } : null; }
-function cleanSyncStatus(status) { return ["Pending", "Joining", "Syncing", "Sync"].includes(status) ? status : "Pending"; }
+function cleanSyncStatus(status) { return ["Pending", "Joining", "Syncing", "Sync", "No Sync"].includes(status) ? status : "Pending"; }
 function provider(url) {
   if (/youtu\.be|youtube\.com/i.test(url)) return "youtube";
   if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";

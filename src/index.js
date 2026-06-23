@@ -14,10 +14,8 @@ let currentVideoId = null;
 let ignorePlayerEvents = false;
 let ytReady = false;
 let pingStart = 0;
-let pingSamples = [];
 let playbackUnlocked = false;
 let syncStatus = "Pending";
-let syncTimer = null;
 let pendingLocalPlaylist = false;
 let syncAdjustmentKey = null;
 const VOLUME_STORAGE_KEY = "watchparty:volume";
@@ -75,8 +73,6 @@ function renderRoom(id) {
   });
   socket.on("serverPong", () => {
     const ping = Date.now() - pingStart;
-    pingSamples.push(ping);
-    pingSamples = pingSamples.slice(-2);
     socket?.emit("pongMs", ping);
   });
   setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 500);
@@ -227,21 +223,13 @@ function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); begin
 function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", !isPlaybackGateVisible()); }
 function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing && Boolean(playback.itemId); }
 function localPlayback(next) { return { ...next, updatedAt: Date.now() }; }
-function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length / 2 : 0; }
 function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
   return playback.time + Math.max(0, Date.now() - playback.updatedAt) / 1000;
 }
 function beginSync() {
-  clearTimeout(syncTimer);
   if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
   setSyncStatus("Syncing");
-  scheduleSyncedStatus();
-}
-function scheduleSyncedStatus() {
-  clearTimeout(syncTimer);
-  if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
-  syncTimer = setTimeout(() => setSyncStatus("Sync"), 700 + avgPing());
 }
 function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); updateSyncOverlay(); }
 function ensureSyncOverlay() {
