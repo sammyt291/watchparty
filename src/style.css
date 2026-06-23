@@ -130,3 +130,18 @@ h2 { font-size: 1rem; overflow-wrap: anywhere; margin: 0; color: #ffce6a; }
   pointer-events: none;
 }
 .sync-overlay.is-hidden { display: none; }
+.sync-overlay[data-mode="adjustment"] {
+  inset: 1rem 50% auto auto;
+  width: max-content;
+  height: auto;
+  max-width: calc(100% - 2rem);
+  transform: translateX(50%);
+  display: block;
+  padding: .55rem .9rem;
+  border: 1px solid rgb(255 244 216 / 35%);
+  border-radius: 999px;
+  background: rgb(5 6 9 / 72%);
+  font-size: .95rem;
+  letter-spacing: .02em;
+}
+.sync-overlay[data-mode="adjustment"].is-hidden { display: none; }

@@ -12,11 +12,11 @@ const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] }
 const rooms = new Map();
 const SYNC_CHECK_INTERVAL_MS = 5000;
 const SYNC_CHECK_RESPONSE_MS = 750;
-const SYNC_TARGET_TOLERANCE_MS = 10;
+const SYNC_TARGET_TOLERANCE_MS = 50;
 const SYNC_RECHECK_DELAY_MS = 900;
-const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 20;
-const SYNC_ADJUSTMENT_INITIAL_STEP_MS = 40;
-const SYNC_ADJUSTMENT_SCALE_STEP_MS = 50;
+const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 5;
+const SYNC_ADJUSTMENT_INITIAL_STEP_MS = 50;
+const SYNC_ADJUSTMENT_SCALE_STEP_MS = 100;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
