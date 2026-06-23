@@ -10,6 +10,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
+const PLAY_START_DELAY_MS = 2500;
 
 app.use(cors());
 app.use(express.json());
@@ -123,15 +124,24 @@ function broadcastUsers(roomId) { const room = rooms.get(roomId); if (room) io.t
 function broadcastPlaylist(roomId, room) { io.to(roomId).emit("playlist", room.playlist); }
 function schedulePlayback(roomId, room, basePlayback, originId = null) {
   const maxPing = Math.max(0, ...[...room.users.values()].map((user) => user.ping || 0));
-  for (const [socketId, user] of room.users) {
-    const delay = Math.max(0, maxPing - (user.ping || 0));
-    setTimeout(() => io.to(socketId).emit("playback", playbackForUser(room, socketId, basePlayback, originId)), delay);
+  const targetStartAt = basePlayback.playing ? Date.now() + PLAY_START_DELAY_MS + maxPing : null;
+  for (const socketId of room.users.keys()) {
+    io.to(socketId).emit("playback", playbackForUser(room, socketId, basePlayback, originId, targetStartAt));
   }
 }
-function playbackForUser(room, socketId, basePlayback = room.playback, originId = null) {
+function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, targetStartAt = null) {
   const user = room.users.get(socketId);
-  const elapsed = basePlayback.playing ? (Date.now() - basePlayback.updatedAt + (user?.ping || 0) / 2) / 1000 : 0;
-  return { ...basePlayback, originId, time: Math.max(0, basePlayback.time + elapsed), updatedAt: Date.now() };
+  const now = Date.now();
+  const fallbackElapsed = basePlayback.playing ? (now - basePlayback.updatedAt + (user?.ping || 0) / 2) / 1000 : 0;
+  const startTime = targetStartAt == null ? null : Math.max(0, basePlayback.time + (targetStartAt - basePlayback.updatedAt) / 1000);
+  return {
+    ...basePlayback,
+    originId,
+    startDelayMs: targetStartAt == null ? 0 : Math.max(0, targetStartAt - now),
+    startTime,
+    time: startTime ?? Math.max(0, basePlayback.time + fallbackElapsed),
+    updatedAt: now,
+  };
 }
 function logRooms() {
   console.clear();

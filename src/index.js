@@ -16,8 +16,7 @@ let pingSamples = [];
 let playbackUnlocked = false;
 let syncStatus = "Pending";
 let syncTimer = null;
-let startCatchupTimer = null;
-let startCatchupPending = false;
+let scheduledPlayTimer = null;
 
 if (!roomId) renderSplash(); else renderRoom(roomId);
 
@@ -44,7 +43,6 @@ function renderRoom(id) {
     pingSamples.push(ping);
     pingSamples = pingSamples.slice(-10);
     socket?.emit("pongMs", ping);
-    if (syncStatus === "Syncing" && pingSamples.length >= 3 && !isPlaybackGateVisible() && !isCurrentPlaybackOwner()) applyFineSyncAdjustment();
   });
   setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 500);
   byId("playPause").onclick = togglePlay;
@@ -118,13 +116,14 @@ function onYouTubeReady() {
 }
 function applyPlayback(fineAdjust = false) {
   byId("playPause").textContent = playback.playing ? "Pause" : "Play";
+  clearTimeout(scheduledPlayTimer);
   if (!ytReady || !isYouTubePlayer()) return;
 
   const t = targetPlaybackTime();
   withIgnoredPlayerEvents(() => {
     if (hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
-    if ((!playback.playing || !playbackUnlocked) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
-    if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) { startCatchupPending = shouldCatchupOnStart(); ytPlayer.playVideo(); }
+    if ((!playback.playing || !playbackUnlocked || playback.startDelayMs > 0) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
+    if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) schedulePlaybackStart();
   });
 }
 function syncFromPlayer(e) {
@@ -152,25 +151,25 @@ function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidde
 function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing && Boolean(playback.itemId); }
 function localPlayback(next) { return { ...next, updatedAt: Date.now() }; }
 function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length : 0; }
-function targetPlaybackTime() { return playback.playing ? playback.time + (Date.now() - playback.updatedAt + avgPing() / 2) / 1000 : playback.time; }
-function isCurrentPlaybackOwner() { return Boolean(playback.originId && playback.originId === socket?.id); }
-function shouldCatchupOnStart() { return playback.playing && playbackUnlocked && !isCurrentPlaybackOwner(); }
+function targetPlaybackTime() {
+  if (!playback.playing) return playback.time;
+  if (Number.isFinite(playback.startTime)) return playback.startTime + Math.max(0, Date.now() - playback.updatedAt - (playback.startDelayMs || 0)) / 1000;
+  return playback.time + (Date.now() - playback.updatedAt + avgPing() / 2) / 1000;
+}
+function schedulePlaybackStart() {
+  const delay = Math.max(0, (playback.startDelayMs || 0) - avgPing() / 2);
+  scheduledPlayTimer = setTimeout(() => withIgnoredPlayerEvents(() => ytPlayer.playVideo()), delay);
+}
 function beginSync() {
   clearTimeout(syncTimer);
   if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
   setSyncStatus("Syncing");
   scheduleSyncedStatus();
 }
-function applyFineSyncAdjustment() { applyPlayback(true); scheduleSyncedStatus(); }
-function scheduleStartCatchup() {
-  startCatchupPending = false;
-  clearTimeout(startCatchupTimer);
-  startCatchupTimer = setTimeout(() => applyFineSyncAdjustment(), Math.min(4000, Math.max(2500, avgPing() * 2)));
-}
 function scheduleSyncedStatus() {
   clearTimeout(syncTimer);
   if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
-  syncTimer = setTimeout(() => setSyncStatus("Sync"), 700 + avgPing());
+  syncTimer = setTimeout(() => setSyncStatus("Sync"), 700 + avgPing() + (playback.startDelayMs || 0));
 }
 function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); }
 function withIgnoredPlayerEvents(callback) { ignorePlayerEvents = true; callback(); setTimeout(() => { ignorePlayerEvents = false; }, 1000); }
