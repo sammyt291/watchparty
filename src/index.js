@@ -68,20 +68,24 @@ function renderRoom(id) {
   setInterval(pollNtpClock, 60_000);
   byId("playPause").onclick = togglePlay;
   byId("seek").oninput = seek;
-  byId("urlInput").onkeydown = addUrl;
+  byId("urlInput").onkeydown = handleUrlInputKeydown;
   byId("enablePlayback").onclick = unlockPlayback;
   updatePlaybackGate();
   loadYouTubeApi();
 }
-async function addUrl(event) {
-  if (event.key !== "Enter") return;
-  const input = event.currentTarget;
+function handleUrlInputKeydown(event) {
+  if (event.isComposing || (event.key !== "Enter" && event.code !== "Enter")) return;
+  event.preventDefault();
+  addUrl();
+}
+async function addUrl() {
+  const input = byId("urlInput");
   const url = input.value.trim();
   if (!url) return;
   input.value = "";
   const meta = await (await fetch(`${serverHost}/api/metadata?url=${encodeURIComponent(url)}`)).json();
   playlist.push({ id: crypto.randomUUID(), ...meta });
-  if (!playback.itemId) playback.itemId = playlist[0].id;
+  if (!playback.itemId) playback = { ...playback, itemId: playlist[0].id, playing: false, time: 0, updatedAt: Date.now() };
   emitPlaylist();
 }
 function paintAll() { paintQueue(); paintUsers(); loadCurrent(); }
