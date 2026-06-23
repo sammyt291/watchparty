@@ -76,7 +76,7 @@ function loadCurrent() {
 }
 function ensurePlayerHost(videoId) {
   const embedUrl = youtubeEmbedUrl(videoId);
-  byId("video").innerHTML = `<iframe id="player" class="youtube-player" src="${escapeHtml(embedUrl)}" title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
+  byId("video").innerHTML = `<iframe id="player" class="youtube-player" src="${escapeHtml(embedUrl)}" title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" style="display: block;"></iframe>`;
 }
 function loadYoutube(url) {
   const id = youtubeId(url);
@@ -143,6 +143,7 @@ function sizeYouTubeIframe() {
   const iframe = hasYtMethod("getIframe") ? ytPlayer.getIframe() : byId("player")?.querySelector("iframe");
   if (!iframe) return;
   iframe.classList.add("youtube-iframe");
+  iframe.style.display = "block";
   iframe.setAttribute("allow", "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share");
   iframe.setAttribute("allowfullscreen", "");
   iframe.removeAttribute("width");

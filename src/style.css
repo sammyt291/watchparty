@@ -48,7 +48,7 @@ h2 { font-size: 1rem; overflow-wrap: anywhere; margin: 0; color: #ffce6a; }
 .youtube-iframe {
   position: absolute;
   inset: 0;
-  display: block;
+  display: block !important;
   width: 100% !important;
   height: 100% !important;
   max-width: none;
