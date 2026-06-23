@@ -4,6 +4,8 @@ const app = document.querySelector("#app");
 const LAN_HOST_ALIAS_SUFFIX = "sslip.io";
 redirectIpHostToDnsAlias();
 const serverHost = location.origin;
+const CLOCK_SYNC_URL = "https://timeapi.io/api/time/current/zone?timeZone=UTC";
+const CLOCK_SYNC_SAMPLE_LIMIT = 5;
 const roomId = getRoomId();
 let socket = null;
 let playlist = [];
@@ -16,6 +18,7 @@ let ytReady = false;
 let pingStart = 0;
 let pingSamples = [];
 let clockOffsetMs = 0;
+let clockSyncSamples = [];
 let playbackUnlocked = false;
 let syncStatus = "Pending";
 let syncTimer = null;
@@ -180,14 +183,19 @@ function ntpNow() { return Date.now() + clockOffsetMs; }
 async function pollNtpClock() {
   const sentAt = Date.now();
   try {
-    const response = await fetch(`${serverHost}/api/ntp-time`, { cache: "no-store" });
+    const response = await fetch(CLOCK_SYNC_URL, { cache: "no-store" });
     if (!response.ok) return;
     const data = await response.json();
     const receivedAt = Date.now();
     const rtt = receivedAt - sentAt;
-    if (Number.isFinite(data.now)) clockOffsetMs = Math.round(data.now + rtt / 2 - receivedAt);
+    const remoteNow = Number.isFinite(data.unixtime) ? data.unixtime * 1000 : Date.parse(`${data.dateTime || data.utc_datetime || ""}Z`);
+    if (!Number.isFinite(remoteNow)) return;
+
+    clockSyncSamples.push({ offset: Math.round(remoteNow + rtt / 2 - receivedAt), rtt });
+    clockSyncSamples = clockSyncSamples.sort((a, b) => a.rtt - b.rtt).slice(0, CLOCK_SYNC_SAMPLE_LIMIT);
+    clockOffsetMs = clockSyncSamples[0].offset;
   } catch (error) {
-    console.warn("Unable to poll NTP clock", error);
+    console.warn("Unable to poll shared clock", error);
   }
 }
 function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length : 0; }

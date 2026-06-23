@@ -121,40 +121,6 @@ io.on("connection", (socket) => {
 server.listen(config.PORT, config.HOST, () => {
   console.log(`WatchParty listening on http://${config.HOST}:${config.PORT}`);
 });
-refreshNtpOffset();
-setInterval(refreshNtpOffset, NTP_POLL_INTERVAL_MS).unref?.();
-
-function ntpNow() { return Date.now() + ntpOffsetMs; }
-async function refreshNtpOffset() {
-  try {
-    ntpOffsetMs = Math.round(await queryNtpOffset());
-    ntpUpdatedAt = Date.now();
-  } catch (error) {
-    console.warn(`Unable to refresh NTP offset from ${NTP_HOST}:`, error.message);
-  }
-}
-function queryNtpOffset() {
-  return new Promise((resolve, reject) => {
-    const socket = dgram.createSocket("udp4");
-    const packet = Buffer.alloc(48);
-    packet[0] = 0x1b;
-    const sentAt = Date.now();
-    const timeout = setTimeout(() => { socket.close(); reject(new Error("NTP request timed out")); }, NTP_TIMEOUT_MS);
-    socket.once("error", (error) => { clearTimeout(timeout); socket.close(); reject(error); });
-    socket.once("message", (message) => {
-      clearTimeout(timeout);
-      const receivedAt = Date.now();
-      socket.close();
-      if (message.length < 48) return reject(new Error("Invalid NTP response"));
-      const seconds = message.readUInt32BE(40) - 2_208_988_800;
-      const fraction = message.readUInt32BE(44) / 2 ** 32;
-      const serverTime = (seconds + fraction) * 1000;
-      resolve(serverTime - ((sentAt + receivedAt) / 2));
-    });
-    socket.send(packet, 0, packet.length, NTP_PORT, NTP_HOST);
-  });
-}
-
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
@@ -197,7 +163,7 @@ function playbackForUser(room, socketId, basePlayback = room.playback, originId 
     ...basePlayback,
     originId,
     startDelayMs: targetStartAt == null ? 0 : Math.max(0, targetStartAt - now),
-    targetStartAt: targetStartAt == null ? null : targetStartAt + ntpOffsetMs,
+    targetStartAt,
     startTime,
     time: startTime ?? Math.max(0, basePlayback.time + fallbackElapsed),
     updatedAt: now,
