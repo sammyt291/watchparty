@@ -47,7 +47,7 @@ io.on("connection", (socket) => {
   const room = getRoom(roomId);
   const ip = getIp(socket.handshake.address);
   const name = safeName(String(socket.handshake.query.name || ""));
-  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0, syncHistory: null });
+  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0, syncHistory: null, syncSettled: false });
   socket.join(roomId);
   socket.emit("state", serializeForSocket(room, socket.id));
   broadcastUsers(roomId);
@@ -122,8 +122,8 @@ io.on("connection", (socket) => {
       room.adjustmentCycle += 1;
       room.adjustmentAttempt = 0;
       room.syncCheckInProgress = false;
-      room.syncSettled = false;
       for (const user of room.users.values()) {
+        user.syncSettled = false;
         user.adjustedCycle = null;
         user.adjustedAttempt = 0;
         user.seekOffset = null;
@@ -159,7 +159,7 @@ setInterval(checkRoomSync, SYNC_CHECK_INTERVAL_MS);
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
-    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false, syncSettled: false };
+    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false };
     rooms.set(id, room);
   }
   return room;
@@ -216,7 +216,7 @@ function markRoomPausedInSync(room) {
 function checkRoomSync() {
   const startedAt = Date.now();
   for (const [roomId, room] of rooms) {
-    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress || room.syncSettled || roomHasNoSyncUser(room)) continue;
+    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress || roomUsersAreSyncSettled(room) || roomHasNoSyncUser(room)) continue;
     room.adjustmentAttempt = 0;
     room.syncCheckInProgress = true;
     for (const user of room.users.values()) {
@@ -247,6 +247,7 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     const skipAhead = -offset;
     if (skipAhead <= secondsFromMs(SYNC_TARGET_TOLERANCE_MS)) {
       user.syncStatus = "Sync";
+      user.syncSettled = true;
       continue;
     }
     if (user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1) continue;
@@ -255,6 +256,7 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
       continue;
     }
     user.syncStatus = "Syncing";
+    user.syncSettled = false;
     user.adjustedCycle = cycle;
     user.adjustedAttempt = attempt + 1;
     adjusted = true;
@@ -266,7 +268,7 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
   if (adjusted) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
   else {
     room.syncCheckInProgress = false;
-    room.syncSettled = true;
+    for (const { user } of positions) user.syncSettled = true;
   }
 }
 function recheckRoomSync(roomId, cycle, attempt, itemId) {
@@ -321,6 +323,9 @@ function computePidSyncAdjustment(user, currentLag) {
   measurement.pid = { proportional, integral, derivative };
   if (!Number.isFinite(requestedSkipAhead)) return minSeek;
   return clamp(requestedSkipAhead, minSeek, maxSeek);
+}
+function roomUsersAreSyncSettled(room) {
+  return [...room.users.values()].every((user) => user.syncSettled);
 }
 function roomHasNoSyncUser(room) {
   return [...room.users.values()].some((user) => user.syncStatus === "No Sync");
