@@ -32,7 +32,7 @@ function renderRoom(id) {
     name = prompt("Choose your display name", name) || name;
     localStorage.setItem("watchparty:name", name);
   }
-  app.innerHTML = `<main class="room"><section class="stage"><div id="video" class="video"><div class="empty">Add a YouTube or Facebook video URL</div></div><div class="controls"><button id="playPause">Play</button><input id="seek" type="range" min="0" max="1000" value="0"/></div><div id="users" class="users"></div></section><aside class="playlist"><h2>Room ${escapeHtml(id)}</h2><input id="urlInput" placeholder="Paste URL and press Enter"/><div id="queue"></div></aside></main><div id="playbackGate" class="playback-gate" role="dialog" aria-modal="true" aria-labelledby="playbackGateTitle"><div class="playback-gate__panel"><h2 id="playbackGateTitle">Enable playback</h2><p>Your browser needs a click before shared room media can play.</p><button id="enablePlayback" class="primary">Enable</button></div></div>`;
+  app.innerHTML = `<main class="room"><section class="stage"><div id="video" class="video"><div class="empty">Add a YouTube or Facebook video URL</div><div id="syncOverlay" class="sync-overlay is-hidden" aria-live="polite">Syncing playback…</div></div><div class="controls"><button id="playPause">Play</button><input id="seek" type="range" min="0" max="1000" value="0"/></div><div id="users" class="users"></div></section><aside class="playlist"><h2>Room ${escapeHtml(id)}</h2><input id="urlInput" placeholder="Paste URL and press Enter"/><div id="queue"></div></aside></main><div id="playbackGate" class="playback-gate" role="dialog" aria-modal="true" aria-labelledby="playbackGateTitle"><div class="playback-gate__panel"><h2 id="playbackGateTitle">Enable playback</h2><p>Your browser needs a click before shared room media can play.</p><button id="enablePlayback" class="primary">Enable</button></div></div>`;
   socket = io(serverHost, { query: { roomId: id, name } });
   socket.on("state", (state) => { playlist = state.playlist; playback = localPlayback(state.playback); users = state.users; setSyncStatus("Joining"); paintAll(); updatePlaybackGate(); if (!isPlaybackGateVisible()) beginSync(); });
   socket.on("playlist", (next) => { playlist = next; paintQueue(); loadCurrent(); });
@@ -84,11 +84,12 @@ function loadCurrent() {
   paintQueue();
   if (!item) return;
   if (item.provider === "youtube") loadYoutube(item.url);
-  else if (item.provider === "facebook") { ytPlayer = null; currentVideoId = null; byId("video").innerHTML = `<iframe src="https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(item.url)}&show_text=false" allow="autoplay; encrypted-media" allowfullscreen></iframe>`; }
+  else if (item.provider === "facebook") { ytPlayer = null; currentVideoId = null; byId("video").innerHTML = `<iframe src="https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(item.url)}&show_text=false" allow="autoplay; encrypted-media" allowfullscreen></iframe>`; ensureSyncOverlay(); }
 }
 function ensurePlayerHost(videoId) {
   const embedUrl = youtubeEmbedUrl(videoId);
   byId("video").innerHTML = `<iframe id="player" class="youtube-player" src="${escapeHtml(embedUrl)}" title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" style="display: block;"></iframe>`;
+  ensureSyncOverlay();
 }
 function loadYoutube(url) {
   const id = youtubeId(url);
@@ -128,7 +129,6 @@ function applyPlayback(fineAdjust = false) {
 }
 function syncFromPlayer(e) {
   sizeYouTubeIframe();
-  if (e.data === window.YT?.PlayerState.PLAYING && startCatchupPending) scheduleStartCatchup();
   if (ignorePlayerEvents) return;
   if (e.data === window.YT?.PlayerState.ENDED) emitPlayback(false, 0);
 }
@@ -157,7 +157,7 @@ function targetPlaybackTime() {
   return playback.time + (Date.now() - playback.updatedAt + avgPing() / 2) / 1000;
 }
 function schedulePlaybackStart() {
-  const delay = Math.max(0, (playback.startDelayMs || 0) - avgPing() / 2);
+  const delay = Math.max(0, playback.startDelayMs || 0);
   scheduledPlayTimer = setTimeout(() => withIgnoredPlayerEvents(() => ytPlayer.playVideo()), delay);
 }
 function beginSync() {
@@ -171,7 +171,18 @@ function scheduleSyncedStatus() {
   if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
   syncTimer = setTimeout(() => setSyncStatus("Sync"), 700 + avgPing() + (playback.startDelayMs || 0));
 }
-function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); }
+function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); updateSyncOverlay(); }
+function ensureSyncOverlay() {
+  if (!byId("syncOverlay")) byId("video")?.insertAdjacentHTML("beforeend", `<div id="syncOverlay" class="sync-overlay is-hidden" aria-live="polite">Syncing playback…</div>`);
+  updateSyncOverlay();
+}
+function updateSyncOverlay() {
+  ensureSyncOverlayElement();
+  byId("syncOverlay")?.classList.toggle("is-hidden", !(syncStatus === "Syncing" && playback.playing && !isPlaybackGateVisible()));
+}
+function ensureSyncOverlayElement() {
+  if (!byId("syncOverlay") && byId("video")) byId("video").insertAdjacentHTML("beforeend", `<div id="syncOverlay" class="sync-overlay is-hidden" aria-live="polite">Syncing playback…</div>`);
+}
 function withIgnoredPlayerEvents(callback) { ignorePlayerEvents = true; callback(); setTimeout(() => { ignorePlayerEvents = false; }, 1000); }
 function isYouTubePlayer() { return ytPlayer && typeof ytPlayer === "object" && hasYtMethod("getIframe"); }
 function hasYtMethod(method) { return typeof ytPlayer?.[method] === "function"; }
