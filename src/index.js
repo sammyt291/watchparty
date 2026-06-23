@@ -65,7 +65,17 @@ function renderRoom(id) {
     if (!isPlaybackGateVisible()) beginSync();
   });
   socket.on("playlist", (next) => { pendingLocalPlaylist = false; playlist = next; paintQueue(); loadCurrent(); });
-  socket.on("playback", (next) => { const wasPlaying = playback.playing; const changed = next.itemId !== playback.itemId; playback = localPlayback(next); updatePlaybackGate(); beginSync(); if (changed) loadCurrent(); else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing }); });
+  socket.on("playback", (next) => {
+    const wasPlaying = playback.playing;
+    const changed = next.itemId !== playback.itemId;
+    const originatedHere = next.originId === socket?.id;
+    playback = localPlayback(next);
+    updatePlaybackGate();
+    if (originatedHere) setSyncStatus("Sync");
+    else beginSync();
+    if (changed) loadCurrent();
+    else applyPlayback(true, { skipSeek: originatedHere || (!wasPlaying && playback.playing) });
+  });
   socket.on("users", (next) => { users = next; syncOwnStatusFromUsers(); paintUsers(); });
   socket.on("syncCheck", (check) => {
     socket?.emit("playbackPosition", { itemId: playback.itemId, playing: playback.playing, time: getCurrentSeekTime(), cycle: check?.cycle, attempt: check?.attempt });
