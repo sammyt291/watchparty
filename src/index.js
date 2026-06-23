@@ -15,6 +15,7 @@ let ignorePlayerEvents = false;
 let ytReady = false;
 let pingStart = 0;
 let pingSamples = [];
+let clockOffsetMs = 0;
 let playbackUnlocked = false;
 let syncStatus = "Pending";
 let syncTimer = null;
@@ -60,6 +61,8 @@ function renderRoom(id) {
     socket?.emit("pongMs", ping);
   });
   setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 500);
+  pollNtpClock();
+  setInterval(pollNtpClock, 60_000);
   byId("playPause").onclick = togglePlay;
   byId("seek").oninput = seek;
   byId("urlInput").onkeydown = addUrl;
@@ -169,7 +172,24 @@ function editName() { const next = prompt("Edit your display name", localStorage
 function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); beginSync(); applyPlayback(true); }
 function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", !isPlaybackGateVisible()); }
 function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing && Boolean(playback.itemId); }
-function localPlayback(next) { return { ...next, startDelayMs: Math.max(0, (next.startDelayMs || 0) - avgPing()), updatedAt: Date.now() }; }
+function localPlayback(next) {
+  const startDelayMs = Number.isFinite(next.targetStartAt) ? Math.max(0, next.targetStartAt - ntpNow()) : Math.max(0, next.startDelayMs || 0);
+  return { ...next, startDelayMs, updatedAt: Date.now() };
+}
+function ntpNow() { return Date.now() + clockOffsetMs; }
+async function pollNtpClock() {
+  const sentAt = Date.now();
+  try {
+    const response = await fetch(`${serverHost}/api/ntp-time`, { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    const receivedAt = Date.now();
+    const rtt = receivedAt - sentAt;
+    if (Number.isFinite(data.now)) clockOffsetMs = Math.round(data.now + rtt / 2 - receivedAt);
+  } catch (error) {
+    console.warn("Unable to poll NTP clock", error);
+  }
+}
 function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length : 0; }
 function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
