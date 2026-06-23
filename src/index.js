@@ -68,13 +68,11 @@ function renderRoom(id) {
   socket.on("playback", (next) => {
     const wasPlaying = playback.playing;
     const changed = next.itemId !== playback.itemId;
-    const originatedHere = next.originId === socket?.id;
     playback = localPlayback(next);
     updatePlaybackGate();
-    if (originatedHere) setSyncStatus("Sync");
-    else beginSync();
+    beginSync();
     if (changed) loadCurrent();
-    else applyPlayback(true, { skipSeek: originatedHere || (!wasPlaying && playback.playing) });
+    else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing });
   });
   socket.on("users", (next) => { users = next; syncOwnStatusFromUsers(); paintUsers(); });
   socket.on("syncCheck", (check) => {
@@ -221,14 +219,14 @@ function onYouTubeError(e) {
   byId("video").insertAdjacentHTML("beforeend", `<a class="youtube-fallback" href="${escapeHtml(watchUrl)}" target="_blank" rel="noopener">Open this video on YouTube</a>`);
   console.warn("YouTube player error", e?.data);
 }
-function togglePlay() { unlockPlayback(); emitPlayback(!playback.playing); }
+function togglePlay() { playbackUnlocked = true; updatePlaybackGate(); emitPlayback(!playback.playing); }
 function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
 function changeVolume() { playerVolume = Number(byId("volume").value); localStorage.setItem(VOLUME_STORAGE_KEY, String(playerVolume)); setPlayerVolume(); }
 function setPlayerVolume() { if (hasYtMethod("setVolume")) ytPlayer.setVolume(playerVolume); }
 setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); updateClientSyncHappiness(); }, 500);
 function emitPlaylist() { pendingLocalPlaylist = true; socket?.emit("playlist", playlist); paintQueue(); loadCurrent(); }
 function emitPlayback(playing = playback.playing, time = getYtTime() || playback.time, itemId = playback.itemId) { setSyncStatus("Pending"); socket?.emit("playback", { itemId, playing, time }); }
-function playPlaylistItem(itemId) { if (!itemId || itemId === playback.itemId) return; unlockPlayback(); emitPlayback(true, 0, itemId); }
+function playPlaylistItem(itemId) { if (!itemId || itemId === playback.itemId) return; playbackUnlocked = true; updatePlaybackGate(); emitPlayback(true, 0, itemId); }
 function reorder(event, targetId) { event.preventDefault(); event.stopPropagation(); const id = event.dataTransfer?.getData("text/plain"); if (!id || id === targetId) return; const dragged = playlist.find((i) => i.id === id); playlist = playlist.filter((i) => i.id !== id); playlist.splice(playlist.findIndex((i) => i.id === targetId), 0, dragged); emitPlaylist(); }
 function editName() { const next = prompt("Edit your display name", localStorage.getItem("watchparty:name") || ""); if (next) { localStorage.setItem("watchparty:name", next); socket?.emit("setName", next); } }
 function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); beginSync(); applyPlayback(true); }
