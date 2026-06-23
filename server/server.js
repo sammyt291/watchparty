@@ -3,6 +3,7 @@ const path = require("node:path");
 const express = require("express");
 const cors = require("cors");
 const http = require("node:http");
+const dgram = require("node:dgram");
 const { Server } = require("socket.io");
 const config = require("./config.js");
 
@@ -12,10 +13,20 @@ const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] }
 const rooms = new Map();
 const DEFAULT_PLAY_START_DELAY_CAP_MS = 500;
 const PLAY_START_DELAY_MS = readPlayStartDelayCap();
+const NTP_HOST = process.env.NTP_HOST || "pool.ntp.org";
+const NTP_PORT = Number(process.env.NTP_PORT) || 123;
+const NTP_POLL_INTERVAL_MS = 60_000;
+const NTP_TIMEOUT_MS = 2_000;
+let ntpOffsetMs = 0;
+let ntpUpdatedAt = 0;
 
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
+app.get("/api/ntp-time", async (_req, res) => {
+  if (!ntpUpdatedAt || Date.now() - ntpUpdatedAt > NTP_POLL_INTERVAL_MS) await refreshNtpOffset();
+  res.json({ now: ntpNow(), offset: ntpOffsetMs, syncedAt: ntpUpdatedAt, host: NTP_HOST });
+});
 app.get("/api/metadata", async (req, res) => {
   const url = String(req.query.url || "");
   res.json(await getMetadata(url));
