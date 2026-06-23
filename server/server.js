@@ -83,7 +83,9 @@ io.on("connection", (socket) => {
 
   socket.on("playlist", (playlist) => {
     room.playlist = Array.isArray(playlist) ? playlist.map(cleanItem).filter(Boolean) : [];
-    if (!room.playback.itemId && room.playlist[0]) room.playback.itemId = room.playlist[0].id;
+    if (!room.playback.itemId && room.playlist[0]) {
+      room.playback = { itemId: room.playlist[0].id, playing: false, time: 0, updatedAt: Date.now() };
+    }
     if (room.playback.itemId && !room.playlist.some((item) => item.id === room.playback.itemId)) {
       room.playback = { itemId: room.playlist[0]?.id || null, playing: false, time: 0, updatedAt: Date.now() };
     }
