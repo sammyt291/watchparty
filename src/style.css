@@ -72,3 +72,17 @@ h2 { font-size: 1rem; overflow-wrap: anywhere; margin: 0; color: #ffce6a; }
 }
 .playback-gate__panel h2 { font-size: 1.25rem; margin-bottom: .5rem; }
 .playback-gate__panel p { margin: 0 0 1rem; color: #d7d0b9; }
+
+.youtube-fallback {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 2;
+  padding: .7rem .9rem;
+  border-radius: 999px;
+  background: rgb(5 6 9 / 82%);
+  color: #ffce6a;
+  font-weight: 800;
+  text-decoration: none;
+  box-shadow: 0 10px 30px #0008;
+}

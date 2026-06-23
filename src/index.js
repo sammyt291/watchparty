@@ -30,9 +30,9 @@ function renderRoom(id) {
   }
   app.innerHTML = `<main class="room"><section class="stage"><div id="video" class="video"><div class="empty">Add a YouTube or Facebook video URL</div></div><div class="controls"><button id="playPause">Play</button><input id="seek" type="range" min="0" max="1000" value="0"/></div><div id="users" class="users"></div></section><aside class="playlist"><h2>Room ${escapeHtml(id)}</h2><input id="urlInput" placeholder="Paste URL and press Enter"/><div id="queue"></div></aside></main><div id="playbackGate" class="playback-gate" role="dialog" aria-modal="true" aria-labelledby="playbackGateTitle"><div class="playback-gate__panel"><h2 id="playbackGateTitle">Enable playback</h2><p>Your browser needs a click before shared room media can play.</p><button id="enablePlayback" class="primary">Enable</button></div></div>`;
   socket = io(serverHost, { query: { roomId: id, name } });
-  socket.on("state", (state) => { playlist = state.playlist; playback = state.playback; users = state.users; paintAll(); });
+  socket.on("state", (state) => { playlist = state.playlist; playback = state.playback; users = state.users; paintAll(); updatePlaybackGate(); });
   socket.on("playlist", (next) => { playlist = next; paintQueue(); loadCurrent(); });
-  socket.on("playback", (next) => { const changed = next.itemId !== playback.itemId; playback = next; if (changed) loadCurrent(); else applyPlayback(); });
+  socket.on("playback", (next) => { const changed = next.itemId !== playback.itemId; playback = next; updatePlaybackGate(); if (changed) loadCurrent(); else applyPlayback(); });
   socket.on("users", (next) => { users = next; paintUsers(); });
   socket.on("serverPong", () => socket?.emit("pongMs", Date.now() - pingStart));
   setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 3000);
@@ -82,7 +82,7 @@ function loadYoutube(url) {
     ensurePlayerHost();
     currentVideoId = id;
     ytReady = false;
-    ytPlayer = new window.YT.Player("player", { width: "100%", height: "100%", videoId: id, playerVars: { controls: 0, playsinline: 1, rel: 0, enablejsapi: 1, origin: location.origin }, events: { onReady: onYouTubeReady, onStateChange: syncFromPlayer } });
+    ytPlayer = new window.YT.Player("player", { width: "100%", height: "100%", videoId: id, playerVars: { autoplay: playback.playing && playbackUnlocked ? 1 : 0, controls: 0, playsinline: 1, rel: 0, enablejsapi: 1, origin: location.origin }, events: { onReady: onYouTubeReady, onStateChange: syncFromPlayer, onError: onYouTubeError } });
   } else if (currentVideoId !== id) {
     currentVideoId = id;
     withIgnoredPlayerEvents(() => {
@@ -115,6 +115,12 @@ function syncFromPlayer(e) {
   if (ignorePlayerEvents) return;
   if (e.data === window.YT?.PlayerState.ENDED) emitPlayback(false, 0);
 }
+function onYouTubeError(e) {
+  const item = playlist.find((i) => i.id === playback.itemId);
+  const watchUrl = item?.url || (currentVideoId ? `https://www.youtube.com/watch?v=${currentVideoId}` : "https://www.youtube.com");
+  byId("video").insertAdjacentHTML("beforeend", `<a class="youtube-fallback" href="${escapeHtml(watchUrl)}" target="_blank" rel="noopener">Open this video on YouTube</a>`);
+  console.warn("YouTube player error", e?.data);
+}
 function togglePlay() { unlockPlayback(); emitPlayback(!playback.playing); }
 function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
 setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); }, 500);
@@ -124,7 +130,7 @@ function playPlaylistItem(itemId) { if (!itemId || itemId === playback.itemId) r
 function reorder(event, targetId) { event.preventDefault(); event.stopPropagation(); const id = event.dataTransfer?.getData("text/plain"); if (!id || id === targetId) return; const dragged = playlist.find((i) => i.id === id); playlist = playlist.filter((i) => i.id !== id); playlist.splice(playlist.findIndex((i) => i.id === targetId), 0, dragged); emitPlaylist(); }
 function editName() { const next = prompt("Edit your display name", localStorage.getItem("watchparty:name") || ""); if (next) { localStorage.setItem("watchparty:name", next); socket?.emit("setName", next); } }
 function unlockPlayback() { playbackUnlocked = true; sessionStorage.setItem("watchparty:playbackUnlocked", "true"); updatePlaybackGate(); applyPlayback(); }
-function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", playbackUnlocked); }
+function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", playbackUnlocked || !playback.playing); }
 function withIgnoredPlayerEvents(callback) { ignorePlayerEvents = true; callback(); setTimeout(() => { ignorePlayerEvents = false; }, 1000); }
 function isYouTubePlayer() { return ytPlayer && typeof ytPlayer === "object" && hasYtMethod("getIframe"); }
 function hasYtMethod(method) { return typeof ytPlayer?.[method] === "function"; }
@@ -132,14 +138,23 @@ function getYtDuration() { return hasYtMethod("getDuration") ? ytPlayer.getDurat
 function getYtTime() { return hasYtMethod("getCurrentTime") ? ytPlayer.getCurrentTime() || 0 : 0; }
 function sizeYouTubeIframe() {
   const iframe = hasYtMethod("getIframe") ? ytPlayer.getIframe() : byId("player")?.querySelector("iframe");
-  iframe?.classList.add("youtube-iframe");
-  iframe?.removeAttribute("width");
-  iframe?.removeAttribute("height");
+  if (!iframe) return;
+  iframe.classList.add("youtube-iframe");
+  iframe.setAttribute("allow", "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share");
+  iframe.setAttribute("allowfullscreen", "");
+  iframe.removeAttribute("width");
+  iframe.removeAttribute("height");
 }
 function getRoomId() { return location.pathname.match(/^\/watch\/([^/]+)/)?.[1] || location.pathname.match(/^\/r\/([^/]+)/)?.[1] || ""; }
 function go(id) { location.href = `/watch/${id.replace(/[^a-zA-Z0-9_-]/g, "")}`; }
 function byId(id) { return document.getElementById(id); }
 function randomName() { return `${verbs[Math.floor(Math.random() * verbs.length)]} ${nouns[Math.floor(Math.random() * nouns.length)]}`; }
-function youtubeId(url) { const parsed = new URL(url); return parsed.hostname.includes("youtu.be") ? parsed.pathname.slice(1) : parsed.searchParams.get("v"); }
+function youtubeId(url) {
+  const parsed = new URL(url);
+  if (parsed.hostname.includes("youtu.be")) return parsed.pathname.split("/").filter(Boolean)[0] || "";
+  const pathParts = parsed.pathname.split("/").filter(Boolean);
+  if (["embed", "shorts", "live"].includes(pathParts[0])) return pathParts[1] || "";
+  return parsed.searchParams.get("v") || "";
+}
 function loadYouTubeApi() { if (window.YT?.Player) return loadCurrent(); const s = document.createElement("script"); s.src = "https://www.youtube.com/iframe_api"; document.head.append(s); window.onYouTubeIframeAPIReady = loadCurrent; }
 function escapeHtml(value) { const div = document.createElement("div"); div.textContent = value; return div.innerHTML; }
