@@ -14,6 +14,8 @@ const SYNC_CHECK_INTERVAL_MS = 1000;
 const SYNC_INITIAL_STEP_MS = 100;
 const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 15;
 const SYNC_TARGET_TOLERANCE_MS = 50;
+const SYNC_DEBUG_MODE = true;
+const SYNC_OVERSHOOT_STEP_REDUCTION_PERCENT = 8;
 const PLAYBACK_START_SAFETY_MARGIN_MS = 50;
 const POST_PLAYBACK_SYNC_SETTLE_MS = 250;
 app.use(cors());
@@ -44,7 +46,7 @@ io.on("connection", (socket) => {
   const room = getRoom(roomId);
   const ip = getIp(socket.handshake.address);
   const name = safeName(String(socket.handshake.query.name || ""));
-  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0, syncAdjustmentState: null, syncSettled: false });
+  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0, syncAdjustmentState: null, syncAdjustmentStepSeconds: null, syncSettled: false });
   socket.join(roomId);
   socket.emit("state", serializeForSocket(room, socket.id));
   broadcastUsers(roomId);
@@ -127,6 +129,7 @@ io.on("connection", (socket) => {
         user.adjustedAttempt = 0;
         user.seekOffset = null;
         user.syncAdjustmentState = null;
+        user.syncAdjustmentStepSeconds = null;
       }
     }
     room.playback = {
@@ -171,7 +174,18 @@ function getRoom(id) {
   return room;
 }
 function serializeForSocket(room, socketId) { return { playlist: room.playlist, playback: playbackForUser(room, socketId), users: publicUsers(room) }; }
-function publicUsers(room) { return [...room.users.values()].map(({ id, name, ip, ping, syncStatus, seekTime, seekOffset }) => ({ id, name, ip, ping, syncStatus, seekTime, seekOffset })); }
+function publicUsers(room) {
+  return [...room.users.values()].map(({ id, name, ip, ping, syncStatus, seekTime, seekOffset, syncAdjustmentStepSeconds }) => ({
+    id,
+    name,
+    ip,
+    ping,
+    syncStatus,
+    seekTime,
+    seekOffset,
+    ...(SYNC_DEBUG_MODE ? { syncAdjustmentStepSeconds } : {}),
+  }));
+}
 function broadcastUsers(roomId) { const room = rooms.get(roomId); if (room) io.to(roomId).emit("users", publicUsers(room)); }
 function broadcastPlaylist(roomId, room) { io.to(roomId).emit("playlist", room.playlist); }
 function schedulePlayback(roomId, room, basePlayback, originId = null) {
@@ -241,13 +255,14 @@ function markRoomPausedInSync(room) {
 function checkRoomSync() {
   const startedAt = Date.now();
   for (const [roomId, room] of rooms) {
-    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress || roomUsersAreSyncSettled(room) || roomHasNoSyncUser(room)) continue;
+    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress || roomUsersAreSyncSettled(room)) continue;
     room.adjustmentAttempt = 0;
     room.syncCheckInProgress = true;
     for (const user of room.users.values()) {
       user.adjustedCycle = null;
       user.adjustedAttempt = 0;
       user.syncAdjustmentState = null;
+      user.syncAdjustmentStepSeconds = null;
     }
     room.syncReferenceUserId = room.syncAnchorUserId;
     io.to(roomId).emit("syncCheck", { itemId: room.playback.itemId, cycle: room.adjustmentCycle, attempt: room.adjustmentAttempt });
@@ -278,6 +293,13 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     if (user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1) continue;
     if (attempt >= MAX_SYNC_ADJUSTMENT_ATTEMPTS) {
       user.syncStatus = "No Sync";
+      if (user.syncAdjustmentState) trackBestSyncOffset(user.syncAdjustmentState, offset);
+      const finalSeekDelta = finalBestSyncAdjustment(user, offset);
+      if (Math.abs(finalSeekDelta) > 0.01 && !(user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1)) {
+        user.adjustedCycle = cycle;
+        user.adjustedAttempt = attempt + 1;
+        io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, seekDelta: finalSeekDelta, skipAhead: Math.max(0, finalSeekDelta), final: true });
+      }
       continue;
     }
     user.syncStatus = "Syncing";
@@ -292,7 +314,6 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
   if (adjusted) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
   else {
     room.syncCheckInProgress = false;
-    for (const { user } of positions) user.syncSettled = true;
   }
 }
 function recheckRoomSync(roomId, cycle, attempt, itemId) {
@@ -329,30 +350,41 @@ function nextSyncAdjustment(user, cycle, offset, targetSeekDelta) {
       stepSeconds: secondsFromMs(SYNC_INITIAL_STEP_MS),
       direction: Math.sign(targetSeekDelta),
       previousOffset: null,
+      hasOvershot: false,
+      bestOffset: null,
     };
   }
 
   const state = user.syncAdjustmentState;
+  trackBestSyncOffset(state, offset);
   const previousOffset = Number.isFinite(state.previousOffset) ? state.previousOffset : null;
   const overshot = previousOffset != null && Math.sign(previousOffset) !== Math.sign(offset);
 
   if (overshot) {
     state.direction *= -1;
-    state.stepSeconds /= 2;
+    state.stepSeconds *= 1 - SYNC_OVERSHOOT_STEP_REDUCTION_PERCENT / 100;
+    state.hasOvershot = true;
   }
 
   const seekDelta = state.direction * state.stepSeconds;
+  user.syncAdjustmentStepSeconds = state.stepSeconds;
   state.previousOffset = offset;
 
-  if (!overshot) state.stepSeconds *= 2;
+  if (!overshot && !state.hasOvershot) state.stepSeconds *= 2;
 
   return seekDelta;
 }
+function trackBestSyncOffset(state, offset) {
+  if (!Number.isFinite(offset)) return;
+  if (!Number.isFinite(state.bestOffset) || Math.abs(offset) < Math.abs(state.bestOffset)) state.bestOffset = offset;
+}
+function finalBestSyncAdjustment(user, offset) {
+  const bestOffset = user.syncAdjustmentState?.bestOffset;
+  if (!Number.isFinite(offset) || !Number.isFinite(bestOffset)) return 0;
+  return bestOffset - offset;
+}
 function roomUsersAreSyncSettled(room) {
   return [...room.users.values()].every((user) => user.syncSettled);
-}
-function roomHasNoSyncUser(room) {
-  return [...room.users.values()].some((user) => user.syncStatus === "No Sync");
 }
 function adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) {
   const position = user.position;
