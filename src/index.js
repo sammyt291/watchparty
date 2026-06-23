@@ -18,7 +18,6 @@ let pingSamples = [];
 let playbackUnlocked = false;
 let syncStatus = "Pending";
 let syncTimer = null;
-let scheduledPlayTimer = null;
 let pendingLocalPlaylist = false;
 
 if (!roomId) renderSplash(); else renderRoom(roomId);
@@ -175,14 +174,13 @@ function onYouTubeReady() {
 }
 function applyPlayback(fineAdjust = false) {
   byId("playPause").textContent = playback.playing ? "Pause" : "Play";
-  clearTimeout(scheduledPlayTimer);
   if (!ytReady || !isYouTubePlayer()) return;
 
   const t = targetPlaybackTime();
   withIgnoredPlayerEvents(() => {
     if (hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
-    if ((!playback.playing || !playbackUnlocked || playback.startDelayMs > 0) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
-    if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) schedulePlaybackStart();
+    if ((!playback.playing || !playbackUnlocked) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
+    if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) ytPlayer.playVideo();
   });
 }
 function syncFromPlayer(e) {
@@ -207,16 +205,11 @@ function editName() { const next = prompt("Edit your display name", localStorage
 function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); beginSync(); applyPlayback(true); }
 function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", !isPlaybackGateVisible()); }
 function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing && Boolean(playback.itemId); }
-function localPlayback(next) { return { ...next, startDelayMs: Math.max(0, next.startDelayMs || 0), updatedAt: Date.now() }; }
+function localPlayback(next) { return { ...next, updatedAt: Date.now() }; }
 function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length / 2 : 0; }
 function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
-  const elapsedAfterScheduledStartMs = Date.now() - playback.updatedAt - (playback.startDelayMs || 0);
-  return playback.time + Math.max(0, elapsedAfterScheduledStartMs) / 1000;
-}
-function schedulePlaybackStart() {
-  const delay = Math.max(0, playback.startDelayMs || 0);
-  scheduledPlayTimer = setTimeout(() => withIgnoredPlayerEvents(() => ytPlayer.playVideo()), delay);
+  return playback.time + Math.max(0, Date.now() - playback.updatedAt) / 1000;
 }
 function beginSync() {
   clearTimeout(syncTimer);
@@ -227,7 +220,7 @@ function beginSync() {
 function scheduleSyncedStatus() {
   clearTimeout(syncTimer);
   if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
-  syncTimer = setTimeout(() => setSyncStatus("Sync"), 700 + avgPing() + (playback.startDelayMs || 0));
+  syncTimer = setTimeout(() => setSyncStatus("Sync"), 700 + avgPing());
 }
 function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); updateSyncOverlay(); }
 function ensureSyncOverlay() {
