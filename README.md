@@ -33,6 +33,8 @@ npm start
 
 Then open `http://localhost:8080`. No build step is required.
 
+When you open the app from another device by typing a numeric LAN address such as `http://192.168.1.20:8080`, the client redirects to an equivalent `sslip.io` hostname. YouTube embeds require a hostname in some local-network browsers, while `localhost` is special-cased by the browser.
+
 ## Configuration
 
 Environment variables are optional:
