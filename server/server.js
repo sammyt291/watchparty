@@ -255,7 +255,7 @@ function markRoomPausedInSync(room) {
 function checkRoomSync() {
   const startedAt = Date.now();
   for (const [roomId, room] of rooms) {
-    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress || roomUsersAreSyncSettled(room) || roomHasNoSyncUser(room)) continue;
+    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress || roomUsersAreSyncSettled(room)) continue;
     room.adjustmentAttempt = 0;
     room.syncCheckInProgress = true;
     for (const user of room.users.values()) {
@@ -314,7 +314,6 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
   if (adjusted) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
   else {
     room.syncCheckInProgress = false;
-    for (const { user } of positions) user.syncSettled = true;
   }
 }
 function recheckRoomSync(roomId, cycle, attempt, itemId) {
@@ -386,9 +385,6 @@ function finalBestSyncAdjustment(user, offset) {
 }
 function roomUsersAreSyncSettled(room) {
   return [...room.users.values()].every((user) => user.syncSettled);
-}
-function roomHasNoSyncUser(room) {
-  return [...room.users.values()].some((user) => user.syncStatus === "No Sync");
 }
 function adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) {
   const position = user.position;
