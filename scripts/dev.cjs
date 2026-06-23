@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+const { spawn } = require("node:child_process");
 
 function readPort(argv) {
   for (let i = 0; i < argv.length; i += 1) {
@@ -21,12 +21,11 @@ const env = {
   ...process.env,
   NODE_ENV: process.env.NODE_ENV || "development",
   PORT: serverPort,
-  VITE_SERVER_HOST:
-    process.env.VITE_SERVER_HOST || `http://localhost:${serverPort}`,
+  VITE_SERVER_HOST: process.env.VITE_SERVER_HOST || `http://localhost:${serverPort}`,
 };
 
 const processes = [
-  spawn("npx", ["tsx", "watch", "server/server.ts"], {
+  spawn("node", ["--watch", "server/server.js"], {
     stdio: "inherit",
     env,
     shell: process.platform === "win32",
@@ -62,6 +61,4 @@ for (const child of processes) {
   });
 }
 
-console.log(
-  `Starting WatchParty dev server on http://localhost:${serverPort} and UI on http://localhost:${vitePort}`,
-);
+console.log(`Starting WatchParty dev server on http://localhost:${serverPort} and UI on http://localhost:${vitePort}`);

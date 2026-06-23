@@ -2,16 +2,12 @@
   "name": "watchparty",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "scripts": {
-    "start": "tsx server/server.ts",
+    "start": "node server/server.js",
     "ui": "vite --host",
-    "dev": "node scripts/dev.mjs",
-    "build": "npm run buildReact && npm run typecheckServer",
-    "buildReact": "vite build && npm run typecheck",
-    "typecheckServer": "tsc --project server/tsconfig.json",
-    "typecheck": "tsc --project src/tsconfig.json --noEmit",
-    "dev:server": "tsx watch server/server.ts"
+    "dev": "node scripts/dev.cjs",
+    "build": "vite build",
+    "dev:server": "node --watch server/server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -20,12 +16,6 @@
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
-    "@types/node": "^25.0.1",
-    "@types/youtube": "^0.1.2",
-    "tsx": "^4.22.4",
-    "typescript": "^5.9.3",
     "vite": "^7.2.7"
   }
 }
