@@ -82,7 +82,7 @@ io.on("connection", (socket) => {
       room.playback = { itemId: room.playlist[0].id, playing: false, time: 0, updatedAt: Date.now() };
     }
     if (room.playback.itemId && !room.playlist.some((item) => item.id === room.playback.itemId)) {
-      room.playback = { itemId: room.playlist[0]?.id || null, playing: false, time: 0, updatedAt: Date.now() };
+      room.playback = { ...room.playback, playing: false, updatedAt: Date.now() };
     }
     broadcastPlaylist(roomId, room);
     schedulePlayback(roomId, room, room.playback);

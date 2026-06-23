@@ -19,6 +19,8 @@ let playbackUnlocked = false;
 let syncStatus = "Pending";
 let syncTimer = null;
 let pendingLocalPlaylist = false;
+const VOLUME_STORAGE_KEY = "watchparty:volume";
+let playerVolume = readStoredVolume();
 
 if (!roomId) renderSplash(); else renderRoom(roomId);
 
@@ -47,7 +49,7 @@ function renderRoom(id) {
     name = prompt("Choose your display name", name) || name;
     localStorage.setItem("watchparty:name", name);
   }
-  app.innerHTML = `<main class="room"><section class="stage"><div id="video" class="video"><div class="empty">Add a YouTube or Facebook video URL</div><div id="syncOverlay" class="sync-overlay is-hidden" aria-live="polite">Syncing playback…</div></div><div class="controls"><button id="playPause">Play</button><input id="seek" type="range" min="0" max="1000" value="0"/></div><div id="users" class="users"></div></section><aside class="playlist"><h2>Room ${escapeHtml(id)}</h2><form id="urlForm" class="url-form"><input id="urlInput" placeholder="Paste URL and press Enter"/></form><div id="queue"></div></aside></main><div id="playbackGate" class="playback-gate" role="dialog" aria-modal="true" aria-labelledby="playbackGateTitle"><div class="playback-gate__panel"><h2 id="playbackGateTitle">Enable playback</h2><p>Your browser needs a click before shared room media can play.</p><button id="enablePlayback" class="primary">Enable</button></div></div>`;
+  app.innerHTML = `<main class="room"><section class="stage"><div id="video" class="video"><div class="empty">Add a YouTube or Facebook video URL</div><div id="syncOverlay" class="sync-overlay is-hidden" aria-live="polite">Syncing playback…</div></div><div class="controls"><button id="playPause">Play</button><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek"/><input id="volume" type="range" min="0" max="100" value="50" aria-label="Volume" title="Volume"/></div><div id="users" class="users"></div></section><aside class="playlist"><h2>Room ${escapeHtml(id)}</h2><form id="urlForm" class="url-form"><input id="urlInput" placeholder="Paste URL and press Enter"/></form><div id="queue"></div></aside></main><div id="playbackGate" class="playback-gate" role="dialog" aria-modal="true" aria-labelledby="playbackGateTitle"><div class="playback-gate__panel"><h2 id="playbackGateTitle">Enable playback</h2><p>Your browser needs a click before shared room media can play.</p><button id="enablePlayback" class="primary">Enable</button></div></div>`;
   socket = io(serverHost, { query: { roomId: id, name } });
   socket.on("state", (state) => {
     if (!pendingLocalPlaylist) {
@@ -62,7 +64,7 @@ function renderRoom(id) {
     if (!isPlaybackGateVisible()) beginSync();
   });
   socket.on("playlist", (next) => { pendingLocalPlaylist = false; playlist = next; paintQueue(); loadCurrent(); });
-  socket.on("playback", (next) => { const changed = next.itemId !== playback.itemId; playback = localPlayback(next); updatePlaybackGate(); beginSync(); if (changed) loadCurrent(); else applyPlayback(true); });
+  socket.on("playback", (next) => { const wasPlaying = playback.playing; const changed = next.itemId !== playback.itemId; playback = localPlayback(next); updatePlaybackGate(); beginSync(); if (changed) loadCurrent(); else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing }); });
   socket.on("users", (next) => { users = next; paintUsers(); });
   socket.on("serverPong", () => {
     const ping = Date.now() - pingStart;
@@ -73,6 +75,8 @@ function renderRoom(id) {
   setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 500);
   byId("playPause").onclick = togglePlay;
   byId("seek").oninput = seek;
+  byId("volume").value = String(playerVolume);
+  byId("volume").oninput = changeVolume;
   byId("urlForm").onsubmit = handleUrlFormSubmit;
   byId("urlInput").onkeydown = handleUrlInputKeydown;
   byId("enablePlayback").onclick = unlockPlayback;
@@ -117,15 +121,15 @@ function createItemId() {
 
 function paintAll() { paintQueue(); paintUsers(); loadCurrent(); }
 function paintQueue() {
-  byId("queue").innerHTML = playlist.map((item) => `<article class="card" draggable="true" data-id="${item.id}" data-current="${item.id === playback.itemId}">${item.thumbnail ? `<img src="${item.thumbnail}"/>` : ""}<div><b>${escapeHtml(item.title)}</b><small>${item.provider}${item.duration ? ` · ${item.duration}` : ""}${item.views ? ` · ${item.views}` : ""}</small></div><button data-del="${item.id}" aria-label="Remove">×</button></article>`).join("");
+  byId("queue").innerHTML = playlist.map((item) => `<article class="card" draggable="true" data-id="${item.id}" data-current="${item.id === playback.itemId}">${item.thumbnail ? `<img src="${item.thumbnail}"/>` : ""}<div><button class="card-title" data-play="${item.id}" type="button">${escapeHtml(item.title)}</button><small>${item.provider}${item.duration ? ` · ${item.duration}` : ""}${item.views ? ` · ${item.views}` : ""}</small></div><button data-del="${item.id}" aria-label="Remove">×</button></article>`).join("");
   document.querySelectorAll(".card").forEach((card) => {
     card.ondragstart = (e) => e.dataTransfer?.setData("text/plain", card.dataset.id);
     card.ondragover = (e) => { e.preventDefault(); card.classList.add("over"); };
     card.ondragleave = () => card.classList.remove("over");
     card.ondrop = (e) => reorder(e, card.dataset.id);
-    card.onclick = () => playPlaylistItem(card.dataset.id);
   });
-  document.querySelectorAll("[data-del]").forEach((button) => button.onclick = (event) => { event.stopPropagation(); playlist = playlist.filter((i) => i.id !== button.dataset.del); if (playback.itemId === button.dataset.del) playback.itemId = playlist[0]?.id || null; emitPlaylist(); });
+  document.querySelectorAll("[data-play]").forEach((button) => button.onclick = (event) => { event.stopPropagation(); playPlaylistItem(button.dataset.play); });
+  document.querySelectorAll("[data-del]").forEach((button) => button.onclick = (event) => { event.stopPropagation(); playlist = playlist.filter((i) => i.id !== button.dataset.del); if (playback.itemId === button.dataset.del) playback = { ...playback, playing: false, updatedAt: Date.now() }; emitPlaylist(); });
 }
 function paintUsers() {
   byId("users").innerHTML = users.map((u) => `<button class="user" data-own="${u.id === socket?.id}" data-sync="${escapeHtml(u.syncStatus || "Pending")}">${escapeHtml(u.name)}<small>${escapeHtml(u.syncStatus || "Pending")} · ${u.ping ?? "—"}ms</small>${u.id === socket?.id ? "✎" : ""}</button>`).join("");
@@ -134,9 +138,16 @@ function paintUsers() {
 function loadCurrent() {
   const item = playlist.find((i) => i.id === playback.itemId);
   paintQueue();
-  if (!item) return;
+  if (!item) { showEmptyVideo(); return; }
   if (item.provider === "youtube") loadYoutube(item.url);
   else if (item.provider === "facebook") { ytPlayer = null; currentVideoId = null; byId("video").innerHTML = `<iframe src="https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(item.url)}&show_text=false" allow="autoplay; encrypted-media" allowfullscreen style="display: block;"></iframe>`; ensurePlayerIframesDisplayBlock(); ensureSyncOverlay(); }
+}
+function showEmptyVideo() {
+  ytPlayer = null;
+  currentVideoId = null;
+  ytReady = false;
+  byId("video").innerHTML = `<div class="empty">Add a YouTube or Facebook video URL</div>`;
+  ensureSyncOverlay();
 }
 function ensurePlayerHost() {
   byId("video").innerHTML = `<div id="player" class="youtube-player-host" aria-label="YouTube video player"></div>`;
@@ -170,15 +181,16 @@ function loadYoutube(url) {
 function onYouTubeReady() {
   ytReady = true;
   sizeYouTubeIframe();
+  setPlayerVolume();
   applyPlayback();
 }
-function applyPlayback(fineAdjust = false) {
+function applyPlayback(fineAdjust = false, options = {}) {
   byId("playPause").textContent = playback.playing ? "Pause" : "Play";
   if (!ytReady || !isYouTubePlayer()) return;
 
   const t = targetPlaybackTime();
   withIgnoredPlayerEvents(() => {
-    if (hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
+    if (!options.skipSeek && hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
     if ((!playback.playing || !playbackUnlocked) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
     if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) ytPlayer.playVideo();
   });
@@ -196,6 +208,8 @@ function onYouTubeError(e) {
 }
 function togglePlay() { unlockPlayback(); emitPlayback(!playback.playing); }
 function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
+function changeVolume() { playerVolume = Number(byId("volume").value); localStorage.setItem(VOLUME_STORAGE_KEY, String(playerVolume)); setPlayerVolume(); }
+function setPlayerVolume() { if (hasYtMethod("setVolume")) ytPlayer.setVolume(playerVolume); }
 setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); }, 500);
 function emitPlaylist() { pendingLocalPlaylist = true; socket?.emit("playlist", playlist); paintQueue(); loadCurrent(); }
 function emitPlayback(playing = playback.playing, time = getYtTime() || playback.time, itemId = playback.itemId) { setSyncStatus("Pending"); socket?.emit("playback", { itemId, playing, time }); }
@@ -294,5 +308,6 @@ function youtubePlayerVars() {
     controls: 0,
   };
 }
+function readStoredVolume() { const stored = Number(localStorage.getItem(VOLUME_STORAGE_KEY)); return Number.isFinite(stored) ? Math.min(100, Math.max(0, stored)) : 50; }
 function loadYouTubeApi() { if (window.YT?.Player) return loadCurrent(); const s = document.createElement("script"); s.src = "https://www.youtube.com/iframe_api"; document.head.append(s); window.onYouTubeIframeAPIReady = loadCurrent; }
 function escapeHtml(value) { const div = document.createElement("div"); div.textContent = value; return div.innerHTML; }
