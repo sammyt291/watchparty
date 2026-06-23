@@ -13,11 +13,10 @@ const rooms = new Map();
 const SYNC_CHECK_INTERVAL_MS = 1000;
 const SYNC_TARGET_TOLERANCE_MS = 50;
 const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 5;
-const SYNC_ADJUSTMENT_PID_KP = 1.25;
-const SYNC_ADJUSTMENT_PID_KI = 0.2;
-const SYNC_ADJUSTMENT_PID_KD = 0.35;
-const SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS = 1.5;
-const SYNC_ADJUSTMENT_MIN_SEEK_MS = 80;
+const SYNC_ADJUSTMENT_GAIN = 0.85;
+const SYNC_ADJUSTMENT_WORSENING_GAIN = 0.45;
+const SYNC_ADJUSTMENT_SIGN_FLIP_GAIN = 0.6;
+const SYNC_ADJUSTMENT_MAX_STEP_SECONDS = 2;
 const SYNC_LATENCY_UNCERTAINTY_FACTOR = 1;
 app.use(cors());
 app.use(express.json());
@@ -285,7 +284,7 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     user.adjustedCycle = cycle;
     user.adjustedAttempt = attempt + 1;
     adjusted = true;
-    const requestedSeekDelta = computePidSyncAdjustment(user, seekDelta);
+    const requestedSeekDelta = computeSyncAdjustment(user, seekDelta);
     if (measurement) measurement.nextRequestedSeekDelta = requestedSeekDelta;
     io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, seekDelta: requestedSeekDelta, skipAhead: Math.max(0, requestedSeekDelta) });
   }
@@ -331,37 +330,36 @@ function recordSyncMeasurement(user, cycle, attempt, offset) {
   }
 
   const previousMeasurement = user.syncHistory.measurements[user.syncHistory.measurements.length - 1];
-  const lag = -offset;
-  const previousLag = Number.isFinite(previousMeasurement?.lag) ? previousMeasurement.lag : null;
-  const previousIntegral = Number.isFinite(previousMeasurement?.integral) ? previousMeasurement.integral : 0;
   const measurement = {
     attempt,
     offset,
-    lag,
     previousOffset: previousMeasurement?.offset ?? null,
-    integral: clamp(previousIntegral + lag, -SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS, SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS),
-    derivative: Number.isFinite(previousLag) ? lag - previousLag : 0,
   };
   user.syncHistory.measurements.push(measurement);
   user.syncHistory.measurements = user.syncHistory.measurements.slice(-MAX_SYNC_ADJUSTMENT_ATTEMPTS - 1);
   return measurement;
 }
-function computePidSyncAdjustment(user, targetSeekDelta) {
+function computeSyncAdjustment(user, targetSeekDelta) {
   const measurements = user.syncHistory?.measurements || [];
   const measurement = measurements[measurements.length - 1];
-  if (!measurement) return targetSeekDelta;
+  if (!measurement || !Number.isFinite(targetSeekDelta)) return targetSeekDelta;
 
-  const proportional = SYNC_ADJUSTMENT_PID_KP * targetSeekDelta;
-  const integral = SYNC_ADJUSTMENT_PID_KI * measurement.integral;
-  const derivative = SYNC_ADJUSTMENT_PID_KD * measurement.derivative;
-  const requestedSeekDelta = proportional + integral + derivative;
-  const minSeekDelta = Math.sign(targetSeekDelta) * Math.min(Math.abs(targetSeekDelta), secondsFromMs(SYNC_ADJUSTMENT_MIN_SEEK_MS));
+  const previousOffset = Number.isFinite(measurement.previousOffset) ? measurement.previousOffset : null;
+  const currentOffset = measurement.offset;
+  const absTarget = Math.abs(targetSeekDelta);
+  let gain = SYNC_ADJUSTMENT_GAIN;
 
-  measurement.pid = { proportional, integral, derivative };
-  if (!Number.isFinite(requestedSeekDelta)) return targetSeekDelta;
-  return targetSeekDelta > 0
-    ? clamp(requestedSeekDelta, minSeekDelta, targetSeekDelta)
-    : clamp(requestedSeekDelta, targetSeekDelta, minSeekDelta);
+  if (previousOffset != null) {
+    const signFlipped = Math.sign(previousOffset) !== Math.sign(currentOffset);
+    const gotWorse = Math.abs(currentOffset) > Math.abs(previousOffset);
+    if (signFlipped) gain = Math.min(gain, SYNC_ADJUSTMENT_SIGN_FLIP_GAIN);
+    if (gotWorse) gain = Math.min(gain, SYNC_ADJUSTMENT_WORSENING_GAIN);
+  }
+
+  const maxStep = Math.min(absTarget, SYNC_ADJUSTMENT_MAX_STEP_SECONDS);
+  const requestedSeekDelta = Math.sign(targetSeekDelta) * Math.min(maxStep, absTarget * gain);
+  measurement.adjustment = { gain, requestedSeekDelta };
+  return requestedSeekDelta;
 }
 function roomUsersAreSyncSettled(room) {
   return [...room.users.values()].every((user) => user.syncSettled);
