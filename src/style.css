@@ -40,7 +40,11 @@ h2 { font-size: 1rem; overflow-wrap: anywhere; margin: 0; color: #ffce6a; }
 @media (max-width: 780px) {
   .room { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
   .stage { grid-template-rows: auto auto auto; }
-  .video { aspect-ratio: 16 / 9; min-height: 200px; }
+  .video { aspect-ratio: 16 / 9; min-height: 200px; display: block; }
+  .video iframe,
+  .youtube-player,
+  .youtube-player iframe,
+  .youtube-iframe { display: block !important; }
   .playlist { width: auto; }
 }
 .youtube-player,
