@@ -56,7 +56,7 @@ function renderRoom(id) {
   socket.on("serverPong", () => {
     const ping = Date.now() - pingStart;
     pingSamples.push(ping);
-    pingSamples = pingSamples.slice(-10);
+    pingSamples = pingSamples.slice(-2);
     socket?.emit("pongMs", ping);
   });
   setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 500);
@@ -169,12 +169,12 @@ function editName() { const next = prompt("Edit your display name", localStorage
 function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); beginSync(); applyPlayback(true); }
 function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", !isPlaybackGateVisible()); }
 function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing && Boolean(playback.itemId); }
-function localPlayback(next) { return { ...next, startDelayMs: Math.max(0, (next.startDelayMs || 0) - avgPing()), updatedAt: Date.now() }; }
-function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length : 0; }
+function localPlayback(next) { return { ...next, startDelayMs: Math.max(0, next.startDelayMs || 0), updatedAt: Date.now() }; }
+function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length / 2 : 0; }
 function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
   if (Number.isFinite(playback.startTime)) return playback.startTime + Math.max(0, Date.now() - playback.updatedAt - (playback.startDelayMs || 0)) / 1000;
-  return playback.time + (Date.now() - playback.updatedAt + avgPing() / 2) / 1000;
+  return playback.time + (Date.now() - playback.updatedAt + avgPing()) / 1000;
 }
 function schedulePlaybackStart() {
   const delay = Math.max(0, playback.startDelayMs || 0);
