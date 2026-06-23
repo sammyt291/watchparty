@@ -10,15 +10,8 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
-const SYNC_CHECK_INTERVAL_MS = 1000;
-const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 3;
-const SYNC_TARGET_TOLERANCE_MS = 50;
-const SYNC_DEBUG_MODE = true;
-const MAX_SINGLE_SYNC_ADJUSTMENT_SECONDS = 5;
-const SYNC_ADJUSTMENT_SETTLE_MS = 250;
-const SYNC_POSITION_COLLECTION_MS = 300;
 const PLAYBACK_START_SAFETY_MARGIN_MS = 50;
-const POST_PLAYBACK_SYNC_SETTLE_MS = 250;
+const PLAYBACK_START_PING_MULTIPLIER = 2;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -47,7 +40,7 @@ io.on("connection", (socket) => {
   const room = getRoom(roomId);
   const ip = getIp(socket.handshake.address);
   const name = safeName(String(socket.handshake.query.name || ""));
-  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0, syncAdjustmentState: null, syncAdjustmentStepSeconds: null, syncSettled: false });
+  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null });
   socket.join(roomId);
   socket.emit("state", serializeForSocket(room, socket.id));
   broadcastUsers(roomId);
@@ -78,22 +71,6 @@ io.on("connection", (socket) => {
     broadcastUsers(roomId);
   });
 
-  socket.on("playbackPosition", (position) => {
-    const user = room.users.get(socket.id);
-    if (!user) return;
-    const time = Number(position?.time);
-    user.seekTime = Number.isFinite(time) ? Math.max(0, time) : null;
-    user.position = {
-      itemId: typeof position?.itemId === "string" ? position.itemId : null,
-      playing: Boolean(position?.playing),
-      time: user.seekTime,
-      receivedAt: Date.now(),
-      cycle: Number.isInteger(position?.cycle) ? position.cycle : room.adjustmentCycle,
-      attempt: Number.isInteger(position?.attempt) ? position.attempt : room.adjustmentAttempt,
-    };
-    broadcastUsers(roomId);
-  });
-
   socket.on("syncStatus", (status) => {
     const user = room.users.get(socket.id);
     if (!user) return;
@@ -117,20 +94,10 @@ io.on("connection", (socket) => {
     const requestedItem = typeof playback.itemId === "string" ? playback.itemId : room.playback.itemId;
     const nextPlaying = Boolean(playback.playing);
     const nextItemId = room.playlist.some((item) => item.id === requestedItem) ? requestedItem : room.playback.itemId;
-    const startsPlaybackCycle = nextPlaying && (!room.playback.playing || nextItemId !== room.playback.itemId);
-    if (startsPlaybackCycle) {
-      room.adjustmentCycle += 1;
-      room.adjustmentAttempt = 0;
-      room.syncCheckInProgress = false;
-      room.syncAnchorUserId = socket.id;
-      room.syncReferenceUserId = socket.id;
+    if (nextPlaying) {
       for (const user of room.users.values()) {
-        user.syncSettled = false;
-        user.adjustedCycle = null;
-        user.adjustedAttempt = 0;
+        user.syncStatus = user.id === socket.id ? "Sync" : "Syncing";
         user.seekOffset = null;
-        user.syncAdjustmentState = null;
-        user.syncAdjustmentStepSeconds = null;
       }
     }
     room.playback = {
@@ -139,11 +106,8 @@ io.on("connection", (socket) => {
       time: Number.isFinite(playback.time) ? Math.max(0, Number(playback.time)) : room.playback.time,
       updatedAt: Date.now(),
     };
-    if (startsPlaybackCycle) broadcastUsers(roomId);
+    if (nextPlaying) broadcastUsers(roomId);
     if (!nextPlaying && room.playback.itemId) {
-      room.syncCheckInProgress = false;
-      room.syncAnchorUserId = null;
-      room.syncReferenceUserId = null;
       markRoomPausedInSync(room);
       broadcastUsers(roomId);
     }
@@ -153,11 +117,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     room.users.delete(socket.id);
     if (room.users.size === 0) rooms.delete(roomId);
-    else {
-      if (room.syncAnchorUserId === socket.id) room.syncAnchorUserId = null;
-      if (room.syncReferenceUserId === socket.id) room.syncReferenceUserId = null;
-      broadcastUsers(roomId);
-    }
+    else broadcastUsers(roomId);
     logRooms();
   });
 });
@@ -165,18 +125,17 @@ io.on("connection", (socket) => {
 server.listen(config.PORT, config.HOST, () => {
   console.log(`WatchParty listening on http://${config.HOST}:${config.PORT}`);
 });
-setInterval(checkRoomSync, SYNC_CHECK_INTERVAL_MS);
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
-    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], syncCheckTimer: null, adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false, syncAnchorUserId: null, syncReferenceUserId: null };
+    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [] };
     rooms.set(id, room);
   }
   return room;
 }
 function serializeForSocket(room, socketId) { return { playlist: room.playlist, playback: playbackForUser(room, socketId), users: publicUsers(room) }; }
 function publicUsers(room) {
-  return [...room.users.values()].map(({ id, name, ip, ping, syncStatus, seekTime, seekOffset, syncAdjustmentStepSeconds }) => ({
+  return [...room.users.values()].map(({ id, name, ip, ping, syncStatus, seekTime, seekOffset }) => ({
     id,
     name,
     ip,
@@ -184,7 +143,6 @@ function publicUsers(room) {
     syncStatus,
     seekTime,
     seekOffset,
-    ...(SYNC_DEBUG_MODE ? { syncAdjustmentStepSeconds } : {}),
   }));
 }
 function broadcastUsers(roomId) { const room = rooms.get(roomId); if (room) io.to(roomId).emit("users", publicUsers(room)); }
@@ -193,22 +151,30 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
   clearPlaybackTimers(room);
   const usersByPing = [...room.users.values()].sort((a, b) => (b.ping || 0) - (a.ping || 0));
   const maxOneWayPing = usersByPing[0]?.ping || 0;
-  const scheduledStartAt = basePlayback.playing ? Date.now() + maxOneWayPing + PLAYBACK_START_SAFETY_MARGIN_MS : null;
-  if (basePlayback.playing) basePlayback.updatedAt = scheduledStartAt;
+  const playbackLeadMs = basePlayback.playing ? (maxOneWayPing * PLAYBACK_START_PING_MULTIPLIER) + PLAYBACK_START_SAFETY_MARGIN_MS : 0;
+  const scheduledStartAt = basePlayback.playing ? Date.now() + playbackLeadMs : null;
+  const scheduledPlayback = basePlayback.playing
+    ? { ...basePlayback, time: basePlayback.time + secondsFromMs(playbackLeadMs), updatedAt: scheduledStartAt }
+    : basePlayback;
 
   for (const user of usersByPing) {
+    const isOrigin = Boolean(originId && user.id === originId);
     const userOneWayPing = user.ping || 0;
-    const sendDelayMs = basePlayback.playing ? Math.max(0, scheduledStartAt - Date.now() - userOneWayPing) : 0;
+    const sendDelayMs = basePlayback.playing && !isOrigin ? Math.max(0, scheduledStartAt - Date.now() - userOneWayPing) : 0;
+    const userPlayback = basePlayback.playing && !isOrigin ? scheduledPlayback : basePlayback;
     const sendPlayback = () => {
       if (!rooms.get(roomId)?.users.has(user.id)) return;
-      io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, true));
+      const playbackMessage = playbackForUser(room, user.id, userPlayback, originId, !isOrigin && basePlayback.playing);
+      user.seekTime = playbackMessage.time;
+      user.seekOffset = 0;
+      user.syncStatus = "Sync";
+      io.to(user.id).emit("playback", playbackMessage);
+      broadcastUsers(roomId);
     };
 
     if (sendDelayMs === 0) sendPlayback();
     else room.playbackTimers.push(setTimeout(sendPlayback, sendDelayMs));
   }
-
-  if (basePlayback.playing) schedulePostPlaybackSyncCheck(roomId, room, maxOneWayPing);
 }
 function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, isScheduledPlayback = false) {
   const user = room.users.get(socketId);
@@ -221,157 +187,17 @@ function playbackForUser(room, socketId, basePlayback = room.playback, originId 
     updatedAt: now,
   };
 }
-function markPlaybackOriginInSync(room, socketId) {
-  const user = room.users.get(socketId);
-  if (!user) return;
-  user.seekTime = room.playback.time;
-  user.seekOffset = 0;
-  user.syncStatus = "Sync";
-  user.syncSettled = true;
-  user.position = {
-    itemId: room.playback.itemId,
-    playing: room.playback.playing,
-    time: room.playback.time,
-    receivedAt: Date.now(),
-    cycle: room.adjustmentCycle,
-    attempt: room.adjustmentAttempt,
-  };
-}
 function markRoomPausedInSync(room) {
   for (const user of room.users.values()) {
     user.seekTime = room.playback.time;
     user.seekOffset = 0;
     user.syncStatus = "Sync";
-    user.position = {
-      itemId: room.playback.itemId,
-      playing: false,
-      time: room.playback.time,
-      receivedAt: Date.now(),
-      cycle: room.adjustmentCycle,
-      attempt: room.adjustmentAttempt,
-    };
   }
 }
 
-function checkRoomSync() {
-  const startedAt = Date.now();
-  for (const [roomId, room] of rooms) {
-    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress || roomUsersAreSyncSettled(room)) continue;
-    room.adjustmentAttempt = 0;
-    room.syncCheckInProgress = true;
-    for (const user of room.users.values()) {
-      user.adjustedCycle = null;
-      user.adjustedAttempt = 0;
-      user.syncAdjustmentState = null;
-      user.syncAdjustmentStepSeconds = null;
-    }
-    room.syncReferenceUserId = room.syncAnchorUserId;
-    emitSyncCheck(room, { itemId: room.playback.itemId, cycle: room.adjustmentCycle, attempt: room.adjustmentAttempt });
-    setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.adjustmentAttempt, room.playback.itemId), SYNC_POSITION_COLLECTION_MS);
-  }
-}
-function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
-  const room = rooms.get(roomId);
-  if (!room || !room.playback.playing || room.playback.itemId !== itemId || room.adjustmentCycle !== cycle || room.adjustmentAttempt !== attempt) return;
-  const positions = [...room.users.values()]
-    .map((user) => ({ user, position: user.position, currentTime: adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) }))
-    .filter((entry) => Number.isFinite(entry.currentTime));
-  if (positions.length < 2) {
-    room.syncCheckInProgress = false;
-    return;
-  }
-  const targetTime = syncTargetTime(room, positions);
-  let adjusted = false;
-  for (const { user, currentTime } of positions) {
-    const offset = currentTime - targetTime;
-    const targetSeekDelta = targetTime - currentTime;
-    user.seekOffset = offset;
-    if (Math.abs(targetSeekDelta) <= secondsFromMs(SYNC_TARGET_TOLERANCE_MS)) {
-      user.syncStatus = "Sync";
-      user.syncSettled = true;
-      continue;
-    }
-    if (user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1) continue;
-    if (attempt >= MAX_SYNC_ADJUSTMENT_ATTEMPTS) {
-      user.syncStatus = "No Sync";
-      continue;
-    }
-    user.syncStatus = "Syncing";
-    user.syncSettled = false;
-    user.adjustedCycle = cycle;
-    user.adjustedAttempt = attempt + 1;
-    adjusted = true;
-    const requestedSeekDelta = directSyncAdjustment(targetSeekDelta);
-    user.syncAdjustmentStepSeconds = Math.abs(requestedSeekDelta);
-    io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, seekDelta: requestedSeekDelta, skipAhead: Math.max(0, requestedSeekDelta) });
-  }
-  broadcastUsers(roomId);
-  if (adjusted) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
-  else {
-    room.syncCheckInProgress = false;
-  }
-}
-function recheckRoomSync(roomId, cycle, attempt, itemId) {
-  setTimeout(() => {
-    const room = rooms.get(roomId);
-    if (!room || !room.playback.playing || room.playback.itemId !== itemId || room.adjustmentCycle !== cycle) return;
-    if (room.adjustmentAttempt !== attempt - 1) {
-      room.syncCheckInProgress = false;
-      return;
-    }
-    room.adjustmentAttempt = attempt;
-    const startedAt = Date.now();
-    emitSyncCheck(room, { itemId, cycle, attempt });
-    setTimeout(() => adjustRoomSync(roomId, startedAt, cycle, attempt, itemId), SYNC_POSITION_COLLECTION_MS);
-  }, SYNC_ADJUSTMENT_SETTLE_MS);
-}
-
-function secondsFromMs(ms) { return ms / 1000; }
-function syncTargetTime(room, positions) {
-  const anchorPosition = positions.find(({ user }) => user.id === room.syncAnchorUserId);
-  if (anchorPosition) {
-    room.syncReferenceUserId = anchorPosition.user.id;
-    return anchorPosition.currentTime;
-  }
-
-  const leadingPosition = positions.reduce((leader, entry) => (entry.currentTime > leader.currentTime ? entry : leader), positions[0]);
-  room.syncReferenceUserId = leadingPosition.user.id;
-  return leadingPosition.currentTime;
-}
-function directSyncAdjustment(targetSeekDelta) {
-  const magnitude = Math.min(Math.abs(targetSeekDelta), MAX_SINGLE_SYNC_ADJUSTMENT_SECONDS);
-  return Math.sign(targetSeekDelta) * magnitude;
-}
-function emitSyncCheck(room, check) {
-  const pendingUsers = usersForSyncCheck(room);
-  for (const user of pendingUsers) io.to(user.id).emit("syncCheck", check);
-}
-function usersForSyncCheck(room) {
-  return [...room.users.values()].filter((user) => !user.syncSettled || user.id === room.syncAnchorUserId || user.id === room.syncReferenceUserId);
-}
-function roomUsersAreSyncSettled(room) {
-  return [...room.users.values()].every((user) => user.syncSettled);
-}
-function adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) {
-  const position = user.position;
-  if (!position || position.cycle !== cycle || position.attempt !== attempt || position.itemId !== itemId || !Number.isFinite(position.time)) return NaN;
-  if (position.receivedAt < checkStartedAt) return NaN;
-  const receiveDelaySeconds = (user.ping || 0) / 1000;
-  const elapsedSinceReceiveSeconds = position.playing ? Math.max(0, Date.now() - position.receivedAt) / 1000 : 0;
-  return Math.max(0, position.time + receiveDelaySeconds + elapsedSinceReceiveSeconds);
-}
-function schedulePostPlaybackSyncCheck(roomId, room, maxOneWayPing) {
-  if (room.syncCheckTimer) clearTimeout(room.syncCheckTimer);
-  room.syncCheckTimer = setTimeout(() => {
-    room.syncCheckTimer = null;
-    checkRoomSync();
-  }, maxOneWayPing + PLAYBACK_START_SAFETY_MARGIN_MS + POST_PLAYBACK_SYNC_SETTLE_MS);
-}
 function clearPlaybackTimers(room) {
   for (const timer of room.playbackTimers || []) clearTimeout(timer);
   room.playbackTimers = [];
-  if (room.syncCheckTimer) clearTimeout(room.syncCheckTimer);
-  room.syncCheckTimer = null;
 }
 function logRooms() {
   console.clear();
@@ -385,7 +211,7 @@ function safeRoomId(value) { return value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0
 function safeName(value) { return String(value).replace(/[\t\n\r]/g, " ").trim().slice(0, 32) || "Quiet Otter"; }
 function getIp(address) { return address.replace(/^::ffff:/, ""); }
 function cleanItem(item) { return item?.id && item?.url ? { ...item, title: item.title || item.url } : null; }
-function cleanSyncStatus(status) { return ["Pending", "Joining", "Syncing", "Sync", "No Sync"].includes(status) ? status : "Pending"; }
+function cleanSyncStatus(status) { return ["Pending", "Joining", "Syncing", "Sync"].includes(status) ? status : "Pending"; }
 function provider(url) {
   if (/youtu\.be|youtube\.com/i.test(url)) return "youtube";
   if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";

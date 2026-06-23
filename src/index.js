@@ -17,7 +17,6 @@ let pingStart = 0;
 let playbackUnlocked = false;
 let syncStatus = "Pending";
 let pendingLocalPlaylist = false;
-let syncAdjustmentKey = null;
 let syncOverlayMode = "initial";
 const VOLUME_STORAGE_KEY = "watchparty:volume";
 let playerVolume = readStoredVolume();
@@ -69,17 +68,12 @@ function renderRoom(id) {
     const changed = next.itemId !== playback.itemId;
     playback = localPlayback(next);
     updatePlaybackGate();
-    beginSync();
+    if (isPlaybackGateVisible()) setSyncStatus("Joining");
+    else setSyncStatus("Sync");
     if (changed) loadCurrent();
     else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing });
   });
   socket.on("users", (next) => { users = next; syncOwnStatusFromUsers(); paintUsers(); });
-  socket.on("syncCheck", (check) => {
-    socket?.emit("playbackPosition", { itemId: playback.itemId, playing: playback.playing, time: getCurrentSeekTime(), cycle: check?.cycle, attempt: check?.attempt });
-  });
-  socket.on("syncAdjustment", (adjustment) => {
-    applyServerSyncAdjustment(adjustment);
-  });
   socket.on("serverPong", () => {
     const ping = Date.now() - pingStart;
     socket?.emit("pongMs", ping);
@@ -144,7 +138,7 @@ function paintQueue() {
   document.querySelectorAll("[data-del]").forEach((button) => button.onclick = (event) => { event.stopPropagation(); playlist = playlist.filter((i) => i.id !== button.dataset.del); if (playback.itemId === button.dataset.del) playback = { ...playback, playing: false, updatedAt: Date.now() }; emitPlaylist(); });
 }
 function paintUsers() {
-  byId("users").innerHTML = users.map((u) => `<button class="user" data-own="${u.id === socket?.id}" data-sync="${escapeHtml(u.syncStatus || "Pending")}"><span class="user-name">${escapeHtml(u.name)}${u.id === socket?.id ? " ✎" : ""}</span><small>${escapeHtml(u.syncStatus || "Pending")} · ${u.ping ?? "—"}ms</small><small class="user-time">${formatSeekTime(u.seekTime)} / ${formatSeekOffsetMs(u.seekOffset)}${formatSyncStepDebug(u.syncAdjustmentStepSeconds)}</small></button>`).join("");
+  byId("users").innerHTML = users.map((u) => `<button class="user" data-own="${u.id === socket?.id}" data-sync="${escapeHtml(u.syncStatus || "Pending")}"><span class="user-name">${escapeHtml(u.name)}${u.id === socket?.id ? " ✎" : ""}</span><small>${escapeHtml(u.syncStatus || "Pending")} · ${u.ping ?? "—"}ms</small><small class="user-time">${formatSeekTime(u.seekTime)} / ${formatSeekOffsetMs(u.seekOffset)}</small></button>`).join("");
   document.querySelector('[data-own="true"]')?.addEventListener("click", editName);
 }
 function loadCurrent() {
@@ -245,7 +239,7 @@ function beginSync(mode = "initial") {
 function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); updateSyncOverlay(); }
 function syncOwnStatusFromUsers() {
   const ownStatus = users.find((u) => u.id === socket?.id)?.syncStatus;
-  if (["Sync", "No Sync"].includes(ownStatus) && syncStatus !== ownStatus) {
+  if (ownStatus === "Sync" && syncStatus !== ownStatus) {
     syncStatus = ownStatus;
     updateSyncOverlay();
   }
@@ -269,28 +263,12 @@ function isYouTubePlayer() { return ytPlayer && typeof ytPlayer === "object" && 
 function hasYtMethod(method) { return typeof ytPlayer?.[method] === "function"; }
 function getYtDuration() { return hasYtMethod("getDuration") ? ytPlayer.getDuration() || 0 : 0; }
 function getYtTime() { return hasYtMethod("getCurrentTime") ? ytPlayer.getCurrentTime() || 0 : 0; }
-function getCurrentSeekTime() { return isYouTubePlayer() ? getYtTime() : targetPlaybackTime(); }
-function applyServerSyncAdjustment(adjustment) {
-  const adjustmentKey = `${adjustment?.cycle ?? ""}:${adjustment?.attempt ?? ""}`;
-  if (!adjustment || adjustment.itemId !== playback.itemId || syncAdjustmentKey === adjustmentKey) return;
-  const legacySkipAhead = Number(adjustment.skipAhead);
-  const seekDelta = Number.isFinite(Number(adjustment.seekDelta)) ? Number(adjustment.seekDelta) : legacySkipAhead;
-  if (!Number.isFinite(seekDelta) || Math.abs(seekDelta) <= 0.01 || !isYouTubePlayer() || !hasYtMethod("seekTo")) return;
-  syncAdjustmentKey = adjustmentKey;
-  beginSync("adjustment");
-  withIgnoredPlayerEvents(() => ytPlayer.seekTo(Math.max(0, getYtTime() + seekDelta), true));
-}
 function formatSeekOffsetMs(offset) {
   const seconds = Number(offset);
   if (!Number.isFinite(seconds)) return "—ms";
   const milliseconds = Math.round(seconds * 1000);
   const sign = milliseconds > 0 ? "+" : milliseconds < 0 ? "−" : "±";
   return `${sign}${Math.abs(milliseconds)}ms`;
-}
-function formatSyncStepDebug(stepSeconds) {
-  const seconds = Number(stepSeconds);
-  if (!Number.isFinite(seconds)) return "";
-  return ` / step ${Math.round(seconds * 1000)}ms`;
 }
 function formatSeekTime(time) {
   const seconds = Number(time);
