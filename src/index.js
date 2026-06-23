@@ -18,6 +18,8 @@ let playbackUnlocked = false;
 let syncStatus = "Pending";
 let pendingLocalPlaylist = false;
 let syncOverlayMode = "initial";
+let syncCheckTimer = null;
+const SYNC_TIME_TOLERANCE_SECONDS = 0.35;
 const VOLUME_STORAGE_KEY = "watchparty:volume";
 let playerVolume = readStoredVolume();
 
@@ -69,9 +71,10 @@ function renderRoom(id) {
     playback = localPlayback(next);
     updatePlaybackGate();
     if (isPlaybackGateVisible()) setSyncStatus("Joining");
-    else setSyncStatus("Sync");
+    else beginSync("playback");
     if (changed) loadCurrent();
     else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing });
+    scheduleSyncCheck();
   });
   socket.on("users", (next) => { users = next; syncOwnStatusFromUsers(); paintUsers(); });
   socket.on("serverPong", () => {
@@ -192,7 +195,7 @@ function onYouTubeReady() {
 }
 function applyPlayback(fineAdjust = false, options = {}) {
   byId("playPause").textContent = playback.playing ? "Pause" : "Play";
-  if (!ytReady || !isYouTubePlayer()) return;
+  if (!ytReady || !isYouTubePlayer()) { scheduleSyncCheck(); return; }
 
   const t = targetPlaybackTime();
   withIgnoredPlayerEvents(() => {
@@ -200,6 +203,7 @@ function applyPlayback(fineAdjust = false, options = {}) {
     if ((!playback.playing || !playbackUnlocked) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
     if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) ytPlayer.playVideo();
   });
+  scheduleSyncCheck();
 }
 function syncFromPlayer(e) {
   sizeYouTubeIframe();
@@ -231,18 +235,46 @@ function targetPlaybackTime() {
   return playback.time + Math.max(0, Date.now() - playback.updatedAt) / 1000;
 }
 function beginSync(mode = "initial") {
-  if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
+  if (isPlaybackGateVisible()) { clearSyncCheck(); setSyncStatus("Joining"); return; }
   syncOverlayMode = mode;
-  if (!playback.itemId) { setSyncStatus("Sync"); return; }
+  if (!playback.itemId) { clearSyncCheck(); setSyncStatus("Sync"); return; }
   setSyncStatus("Syncing");
+  scheduleSyncCheck();
 }
 function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); updateSyncOverlay(); }
 function syncOwnStatusFromUsers() {
   const ownStatus = users.find((u) => u.id === socket?.id)?.syncStatus;
-  if (ownStatus === "Sync" && syncStatus !== ownStatus) {
+  if (ownStatus && ownStatus !== syncStatus && ownStatus !== "Sync") {
     syncStatus = ownStatus;
     updateSyncOverlay();
   }
+}
+function scheduleSyncCheck() {
+  clearSyncCheck();
+  if (syncStatus !== "Syncing") return;
+  syncCheckTimer = setTimeout(checkPlaybackSync, 250);
+}
+function clearSyncCheck() {
+  if (!syncCheckTimer) return;
+  clearTimeout(syncCheckTimer);
+  syncCheckTimer = null;
+}
+function checkPlaybackSync() {
+  syncCheckTimer = null;
+  if (syncStatus !== "Syncing") return;
+  if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
+  if (isPlaybackActuallySynced()) { setSyncStatus("Sync"); return; }
+  scheduleSyncCheck();
+}
+function isPlaybackActuallySynced() {
+  if (!playback.itemId) return true;
+  if (!isYouTubePlayer()) return !playback.playing;
+  if (!ytReady || !hasYtMethod("getPlayerState")) return false;
+  const playerState = ytPlayer.getPlayerState();
+  const expectedPlaying = playback.playing && playbackUnlocked;
+  const playerPlaying = playerState === window.YT?.PlayerState.PLAYING || playerState === window.YT?.PlayerState.BUFFERING;
+  if (expectedPlaying !== playerPlaying) return false;
+  return Math.abs(getYtTime() - targetPlaybackTime()) <= SYNC_TIME_TOLERANCE_SECONDS;
 }
 function ensureSyncOverlay() {
   if (!byId("syncOverlay")) byId("video")?.insertAdjacentHTML("beforeend", `<div id="syncOverlay" class="sync-overlay is-hidden" aria-live="polite">Syncing playback…</div>`);

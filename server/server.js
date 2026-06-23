@@ -12,6 +12,7 @@ const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] }
 const rooms = new Map();
 const PLAYBACK_START_SAFETY_MARGIN_MS = 50;
 const PLAYBACK_START_PING_MULTIPLIER = 2;
+const MIN_PLAYBACK_START_LEAD_MS = 250;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -151,7 +152,9 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
   clearPlaybackTimers(room);
   const usersByPing = [...room.users.values()].sort((a, b) => (b.ping || 0) - (a.ping || 0));
   const maxOneWayPing = usersByPing[0]?.ping || 0;
-  const playbackLeadMs = basePlayback.playing ? (maxOneWayPing * PLAYBACK_START_PING_MULTIPLIER) + PLAYBACK_START_SAFETY_MARGIN_MS : 0;
+  const playbackLeadMs = basePlayback.playing
+    ? Math.max(MIN_PLAYBACK_START_LEAD_MS, (maxOneWayPing * PLAYBACK_START_PING_MULTIPLIER) + PLAYBACK_START_SAFETY_MARGIN_MS)
+    : 0;
   const scheduledStartAt = basePlayback.playing ? Date.now() + playbackLeadMs : null;
   const scheduledPlayback = basePlayback.playing
     ? { ...basePlayback, time: basePlayback.time + secondsFromMs(playbackLeadMs), updatedAt: scheduledStartAt }
@@ -166,8 +169,8 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
       if (!rooms.get(roomId)?.users.has(user.id)) return;
       const playbackMessage = playbackForUser(room, user.id, userPlayback, originId, !isOrigin && basePlayback.playing);
       user.seekTime = playbackMessage.time;
-      user.seekOffset = 0;
-      user.syncStatus = "Sync";
+      user.seekOffset = null;
+      user.syncStatus = room.playback.itemId ? "Syncing" : "Sync";
       io.to(user.id).emit("playback", playbackMessage);
       broadcastUsers(roomId);
     };
