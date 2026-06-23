@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -35,8 +36,20 @@ app.get("/api/metadata", async (req, res) => {
 });
 
 const buildPath = path.resolve(__dirname, "..", config.BUILD_DIRECTORY);
+const indexPath = path.join(buildPath, "index.html");
+const hasClientBuild = fs.existsSync(indexPath);
+
 app.use(express.static(buildPath));
-app.get(/.*/, (_req, res) => res.sendFile(path.join(buildPath, "index.html")));
+app.get(/.*/, (_req, res) => {
+  if (!hasClientBuild) {
+    res.status(503).send(
+      `Client build not found at ${indexPath}. Run "npm run build" before "npm start", or use "npm run dev" during development.`,
+    );
+    return;
+  }
+
+  res.sendFile(indexPath);
+});
 
 io.on("connection", (socket) => {
   const roomId = safeRoomId(String(socket.handshake.query.roomId ?? ""));
