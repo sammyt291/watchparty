@@ -1,6 +1,8 @@
 const verbs = ["Brave", "Calm", "Dancing", "Flying", "Gentle", "Happy", "Lucky", "Mighty", "Swift", "Witty"];
 const nouns = ["Badger", "Falcon", "Koala", "Otter", "Panda", "Raven", "Tiger", "Turtle", "Whale", "Wolf"];
 const app = document.querySelector("#app");
+const LAN_HOST_ALIAS_SUFFIX = "sslip.io";
+redirectIpHostToDnsAlias();
 const serverHost = location.origin;
 const roomId = getRoomId();
 let socket = null;
@@ -19,6 +21,19 @@ let syncTimer = null;
 let scheduledPlayTimer = null;
 
 if (!roomId) renderSplash(); else renderRoom(roomId);
+
+function redirectIpHostToDnsAlias() {
+  if (!isLanIpv4Host(location.hostname) || sessionStorage.getItem("watchparty:skipLanAliasRedirect") === "1") return;
+  const alias = `${location.hostname.replaceAll(".", "-")}.${LAN_HOST_ALIAS_SUFFIX}`;
+  location.replace(`${location.protocol}//${alias}${location.port ? `:${location.port}` : ""}${location.pathname}${location.search}${location.hash}`);
+}
+function isLanIpv4Host(hostname) {
+  if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) return false;
+  const parts = hostname.split(".").map(Number);
+  if (parts.some((part) => part < 0 || part > 255)) return false;
+  if (parts[0] === 127 || parts[0] === 0) return false;
+  return true;
+}
 
 function renderSplash() {
   app.innerHTML = `<main class="splash"><h1>WatchParty</h1><section class="join"><form id="joinForm"><label>Enter a room ID</label><input id="roomInput" autofocus placeholder="room-id"/><button>Enter</button></form><div class="sep"><span></span><b>or</b><span></span></div><button id="newRoom" class="primary">New room</button></section></main>`;
@@ -201,6 +216,7 @@ function sizeYouTubeIframe() {
   ensurePlayerIframesDisplayBlock();
   iframe.setAttribute("allow", "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share");
   iframe.setAttribute("allowfullscreen", "");
+  iframe.referrerPolicy = "origin-when-cross-origin";
   iframe.removeAttribute("width");
   iframe.removeAttribute("height");
 }
@@ -225,6 +241,7 @@ function youtubePlayerVars() {
   return {
     enablejsapi: 1,
     origin: location.origin,
+    widget_referrer: location.href,
     playsinline: 1,
     rel: 0,
     controls: 0,
