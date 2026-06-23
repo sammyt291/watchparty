@@ -66,7 +66,7 @@ function renderRoom(id) {
   });
   socket.on("playlist", (next) => { pendingLocalPlaylist = false; playlist = next; paintQueue(); loadCurrent(); });
   socket.on("playback", (next) => { const wasPlaying = playback.playing; const changed = next.itemId !== playback.itemId; playback = localPlayback(next); updatePlaybackGate(); beginSync(); if (changed) loadCurrent(); else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing }); });
-  socket.on("users", (next) => { users = next; paintUsers(); });
+  socket.on("users", (next) => { users = next; syncOwnStatusFromUsers(); paintUsers(); });
   socket.on("syncCheck", (check) => {
     socket?.emit("playbackPosition", { itemId: playback.itemId, playing: playback.playing, time: getCurrentSeekTime(), cycle: check?.cycle, attempt: check?.attempt });
   });
@@ -237,6 +237,13 @@ function beginSync(mode = "initial") {
   updateClientSyncHappiness();
 }
 function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); updateSyncOverlay(); }
+function syncOwnStatusFromUsers() {
+  const ownStatus = users.find((u) => u.id === socket?.id)?.syncStatus;
+  if (["Sync", "No Sync"].includes(ownStatus) && syncStatus !== ownStatus) {
+    syncStatus = ownStatus;
+    updateSyncOverlay();
+  }
+}
 function ensureSyncOverlay() {
   if (!byId("syncOverlay")) byId("video")?.insertAdjacentHTML("beforeend", `<div id="syncOverlay" class="sync-overlay is-hidden" aria-live="polite">Syncing playback…</div>`);
   updateSyncOverlay();
