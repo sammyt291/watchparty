@@ -145,7 +145,7 @@ function paintQueue() {
   document.querySelectorAll("[data-del]").forEach((button) => button.onclick = (event) => { event.stopPropagation(); playlist = playlist.filter((i) => i.id !== button.dataset.del); if (playback.itemId === button.dataset.del) playback = { ...playback, playing: false, updatedAt: Date.now() }; emitPlaylist(); });
 }
 function paintUsers() {
-  byId("users").innerHTML = users.map((u) => `<button class="user" data-own="${u.id === socket?.id}" data-sync="${escapeHtml(u.syncStatus || "Pending")}"><span class="user-name">${escapeHtml(u.name)}${u.id === socket?.id ? " ✎" : ""}</span><small>${escapeHtml(u.syncStatus || "Pending")} · ${u.ping ?? "—"}ms</small><small class="user-time">${formatSeekTime(u.seekTime)} / ${formatSeekOffsetMs(u.seekOffset)}</small></button>`).join("");
+  byId("users").innerHTML = users.map((u) => `<button class="user" data-own="${u.id === socket?.id}" data-sync="${escapeHtml(u.syncStatus || "Pending")}"><span class="user-name">${escapeHtml(u.name)}${u.id === socket?.id ? " ✎" : ""}</span><small>${escapeHtml(u.syncStatus || "Pending")} · ${u.ping ?? "—"}ms</small><small class="user-time">${formatSeekTime(u.seekTime)} / ${formatSeekOffsetMs(u.seekOffset)}${formatSyncStepDebug(u.syncAdjustmentStepSeconds)}</small></button>`).join("");
   document.querySelector('[data-own="true"]')?.addEventListener("click", editName);
 }
 function loadCurrent() {
@@ -295,6 +295,11 @@ function formatSeekOffsetMs(offset) {
   const milliseconds = Math.round(seconds * 1000);
   const sign = milliseconds > 0 ? "+" : milliseconds < 0 ? "−" : "±";
   return `${sign}${Math.abs(milliseconds)}ms`;
+}
+function formatSyncStepDebug(stepSeconds) {
+  const seconds = Number(stepSeconds);
+  if (!Number.isFinite(seconds)) return "";
+  return ` / step ${Math.round(seconds * 1000)}ms`;
 }
 function formatSeekTime(time) {
   const seconds = Number(time);
