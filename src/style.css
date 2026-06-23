@@ -38,3 +38,32 @@ h2 { font-size: 1rem; overflow-wrap: anywhere; margin: 0; color: #ffce6a; }
 .card small { display: block; color: #9ea7c0; font-size: .7rem; margin-top: .2rem; }
 .card button { padding: .25rem .45rem; border-radius: 8px; }
 @media (max-width: 780px) { .room { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .playlist { width: auto; } }
+.youtube-player,
+.youtube-player iframe {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.playback-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 18%);
+  backdrop-filter: blur(2px);
+}
+.playback-gate.is-hidden { display: none; }
+.playback-gate__panel {
+  width: min(92vw, 360px);
+  padding: 1.5rem;
+  border: 1px solid #ffbd59;
+  border-radius: 22px;
+  background: rgb(21 25 39 / 82%);
+  box-shadow: 0 24px 80px #0009;
+  text-align: center;
+}
+.playback-gate__panel h2 { font-size: 1.25rem; margin-bottom: .5rem; }
+.playback-gate__panel p { margin: 0 0 1rem; color: #d7d0b9; }
