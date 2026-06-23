@@ -10,7 +10,8 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
-const PLAY_START_DELAY_MS = 2500;
+const DEFAULT_PLAY_START_DELAY_CAP_MS = 500;
+const PLAY_START_DELAY_MS = readPlayStartDelayCap();
 
 app.use(cors());
 app.use(express.json());
@@ -113,7 +114,7 @@ server.listen(config.PORT, config.HOST, () => {
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
-    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map() };
+    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [] };
     rooms.set(id, room);
   }
   return room;
@@ -123,10 +124,21 @@ function publicUsers(room) { return [...room.users.values()].map(({ id, name, ip
 function broadcastUsers(roomId) { const room = rooms.get(roomId); if (room) io.to(roomId).emit("users", publicUsers(room)); }
 function broadcastPlaylist(roomId, room) { io.to(roomId).emit("playlist", room.playlist); }
 function schedulePlayback(roomId, room, basePlayback, originId = null) {
-  const maxPing = Math.max(0, ...[...room.users.values()].map((user) => user.ping || 0));
-  const targetStartAt = basePlayback.playing ? Date.now() + PLAY_START_DELAY_MS + maxPing : null;
-  for (const socketId of room.users.keys()) {
-    io.to(socketId).emit("playback", playbackForUser(room, socketId, basePlayback, originId, targetStartAt));
+  clearPlaybackTimers(room);
+  const usersByPing = [...room.users.values()].sort((a, b) => (b.ping || 0) - (a.ping || 0));
+  const maxPing = usersByPing[0]?.ping || 0;
+  const startDelayMs = basePlayback.playing ? Math.min(PLAY_START_DELAY_MS, maxPing * 2) : 0;
+  const targetStartAt = basePlayback.playing ? Date.now() + startDelayMs : null;
+
+  for (const user of usersByPing) {
+    const sendDelayMs = basePlayback.playing ? Math.max(0, maxPing - (user.ping || 0)) : 0;
+    const emitPlayback = () => {
+      if (!rooms.get(roomId)?.users.has(user.id)) return;
+      io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, targetStartAt));
+    };
+
+    if (sendDelayMs === 0) emitPlayback();
+    else room.playbackTimers.push(setTimeout(emitPlayback, sendDelayMs));
   }
 }
 function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, targetStartAt = null) {
@@ -142,6 +154,14 @@ function playbackForUser(room, socketId, basePlayback = room.playback, originId 
     time: startTime ?? Math.max(0, basePlayback.time + fallbackElapsed),
     updatedAt: now,
   };
+}
+function clearPlaybackTimers(room) {
+  for (const timer of room.playbackTimers || []) clearTimeout(timer);
+  room.playbackTimers = [];
+}
+function readPlayStartDelayCap() {
+  const value = Number(process.env.PLAY_START_DELAY_MS);
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : DEFAULT_PLAY_START_DELAY_CAP_MS;
 }
 function logRooms() {
   console.clear();
