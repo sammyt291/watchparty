@@ -127,18 +127,19 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
   clearPlaybackTimers(room);
   const usersByPing = [...room.users.values()].sort((a, b) => (b.ping || 0) - (a.ping || 0));
   const maxPing = usersByPing[0]?.ping || 0;
-  const startDelayMs = basePlayback.playing ? Math.min(PLAY_START_DELAY_MS, maxPing * 2) : 0;
-  const targetStartAt = basePlayback.playing ? Date.now() + startDelayMs : null;
+  const playLeadMs = basePlayback.playing ? Math.min(PLAY_START_DELAY_MS, maxPing) : 0;
+  const scheduleStartedAt = Date.now();
 
   for (const user of usersByPing) {
-    const sendDelayMs = basePlayback.playing ? Math.max(0, maxPing - (user.ping || 0)) : 0;
+    const userPing = user.ping || 0;
+    const startDelayMs = basePlayback.playing ? Math.max(0, playLeadMs - userPing) : 0;
+    const targetStartAt = basePlayback.playing ? scheduleStartedAt + startDelayMs : null;
     const emitPlayback = () => {
       if (!rooms.get(roomId)?.users.has(user.id)) return;
       io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, targetStartAt));
     };
 
-    if (sendDelayMs === 0) emitPlayback();
-    else room.playbackTimers.push(setTimeout(emitPlayback, sendDelayMs));
+    emitPlayback();
   }
 }
 function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, targetStartAt = null) {
