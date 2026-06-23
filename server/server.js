@@ -10,13 +10,10 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
-const SYNC_CHECK_INTERVAL_MS = 5000;
-const SYNC_CHECK_RESPONSE_MS = 750;
+const SYNC_CHECK_INTERVAL_MS = 1000;
 const SYNC_TARGET_TOLERANCE_MS = 50;
-const SYNC_RECHECK_DELAY_MS = 900;
 const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 5;
 const SYNC_ADJUSTMENT_INITIAL_STEP_MS = 50;
-const SYNC_ADJUSTMENT_SCALE_STEP_MS = 100;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -45,7 +42,7 @@ io.on("connection", (socket) => {
   const room = getRoom(roomId);
   const ip = getIp(socket.handshake.address);
   const name = safeName(String(socket.handshake.query.name || ""));
-  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0 });
+  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0, syncHistory: null, lastRequestedSkipAhead: null });
   socket.join(roomId);
   socket.emit("state", serializeForSocket(room, socket.id));
   broadcastUsers(roomId);
@@ -119,10 +116,13 @@ io.on("connection", (socket) => {
     if (startsPlaybackCycle) {
       room.adjustmentCycle += 1;
       room.adjustmentAttempt = 0;
+      room.syncCheckInProgress = false;
       for (const user of room.users.values()) {
         user.adjustedCycle = null;
         user.adjustedAttempt = 0;
         user.seekOffset = null;
+        user.syncHistory = null;
+        user.lastRequestedSkipAhead = null;
       }
     }
     room.playback = {
@@ -132,6 +132,7 @@ io.on("connection", (socket) => {
       updatedAt: Date.now(),
     };
     if (!nextPlaying && room.playback.itemId) {
+      room.syncCheckInProgress = false;
       markRoomPausedInSync(room);
       broadcastUsers(roomId);
     }
@@ -153,7 +154,7 @@ setInterval(checkRoomSync, SYNC_CHECK_INTERVAL_MS);
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
-    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0 };
+    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false };
     rooms.set(id, room);
   }
   return room;
@@ -210,10 +211,17 @@ function markRoomPausedInSync(room) {
 function checkRoomSync() {
   const startedAt = Date.now();
   for (const [roomId, room] of rooms) {
-    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2) continue;
+    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress) continue;
     room.adjustmentAttempt = 0;
+    room.syncCheckInProgress = true;
+    for (const user of room.users.values()) {
+      user.adjustedCycle = null;
+      user.adjustedAttempt = 0;
+      user.syncHistory = null;
+      user.lastRequestedSkipAhead = null;
+    }
     io.to(roomId).emit("syncCheck", { itemId: room.playback.itemId, cycle: room.adjustmentCycle, attempt: room.adjustmentAttempt });
-    setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.adjustmentAttempt, room.playback.itemId), SYNC_CHECK_RESPONSE_MS);
+    setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.adjustmentAttempt, room.playback.itemId), 750);
   }
 }
 function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
@@ -222,12 +230,16 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
   const positions = [...room.users.values()]
     .map((user) => ({ user, position: user.position, currentTime: adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) }))
     .filter((entry) => Number.isFinite(entry.currentTime));
-  if (positions.length < 2) return;
+  if (positions.length < 2) {
+    room.syncCheckInProgress = false;
+    return;
+  }
   const furthestTime = Math.max(...positions.map((entry) => entry.currentTime));
   let adjusted = false;
   for (const { user, currentTime } of positions) {
     const offset = currentTime - furthestTime;
     user.seekOffset = offset;
+    const measurement = recordSyncMeasurement(user, cycle, attempt, offset);
     const skipAhead = -offset;
     if (skipAhead <= secondsFromMs(SYNC_TARGET_TOLERANCE_MS)) {
       user.syncStatus = "Sync";
@@ -242,24 +254,65 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     user.adjustedCycle = cycle;
     user.adjustedAttempt = attempt + 1;
     adjusted = true;
-    const stepAmount = secondsFromMs(SYNC_ADJUSTMENT_INITIAL_STEP_MS + (SYNC_ADJUSTMENT_SCALE_STEP_MS * attempt));
-    io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, skipAhead: skipAhead + stepAmount });
+    const directSkipAhead = computeDirectSyncAdjustment(user, skipAhead);
+    const requestedSkipAhead = directSkipAhead ?? skipAhead + (attempt === 0 ? secondsFromMs(SYNC_ADJUSTMENT_INITIAL_STEP_MS) : 0);
+    user.lastRequestedSkipAhead = requestedSkipAhead;
+    if (measurement) measurement.nextRequestedSkipAhead = requestedSkipAhead;
+    io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, skipAhead: requestedSkipAhead });
   }
   broadcastUsers(roomId);
   if (adjusted) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
+  else room.syncCheckInProgress = false;
 }
 function recheckRoomSync(roomId, cycle, attempt, itemId) {
   setTimeout(() => {
     const room = rooms.get(roomId);
     if (!room || !room.playback.playing || room.playback.itemId !== itemId || room.adjustmentCycle !== cycle) return;
+    if (room.adjustmentAttempt !== attempt - 1) {
+      room.syncCheckInProgress = false;
+      return;
+    }
     room.adjustmentAttempt = attempt;
     const startedAt = Date.now();
     io.to(roomId).emit("syncCheck", { itemId, cycle, attempt });
-    setTimeout(() => adjustRoomSync(roomId, startedAt, cycle, attempt, itemId), SYNC_CHECK_RESPONSE_MS);
-  }, SYNC_RECHECK_DELAY_MS);
+    setTimeout(() => adjustRoomSync(roomId, startedAt, cycle, attempt, itemId), 750);
+  }, 900);
 }
 
 function secondsFromMs(ms) { return ms / 1000; }
+function recordSyncMeasurement(user, cycle, attempt, offset) {
+  if (!user.syncHistory || user.syncHistory.cycle !== cycle) {
+    user.syncHistory = { cycle, measurements: [] };
+  }
+
+  const previousMeasurement = user.syncHistory.measurements[user.syncHistory.measurements.length - 1];
+  const lastRequestedSkipAhead = Number.isFinite(user.lastRequestedSkipAhead) ? user.lastRequestedSkipAhead : null;
+  const measurement = {
+    attempt,
+    offset,
+    previousOffset: previousMeasurement?.offset ?? null,
+    lastRequestedSkipAhead,
+    residual: -offset,
+  };
+  user.syncHistory.measurements.push(measurement);
+  user.syncHistory.measurements = user.syncHistory.measurements.slice(-MAX_SYNC_ADJUSTMENT_ATTEMPTS - 1);
+  return measurement;
+}
+function computeDirectSyncAdjustment(user, currentLag) {
+  const measurements = user.syncHistory?.measurements || [];
+  const measurement = measurements[measurements.length - 1];
+  if (!measurement || !Number.isFinite(measurement.previousOffset) || !Number.isFinite(measurement.lastRequestedSkipAhead) || measurement.lastRequestedSkipAhead <= 0) return null;
+
+  const previousLag = -measurement.previousOffset;
+  const observedImprovement = previousLag - currentLag;
+  const responseRatio = observedImprovement / measurement.lastRequestedSkipAhead;
+  measurement.responseRatio = responseRatio;
+  if (!Number.isFinite(responseRatio) || responseRatio <= 0) return null;
+
+  const directSkipAhead = currentLag / responseRatio;
+  if (!Number.isFinite(directSkipAhead) || directSkipAhead <= 0) return null;
+  return Math.min(directSkipAhead, currentLag);
+}
 function adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) {
   const position = user.position;
   if (!position || position.cycle !== cycle || position.attempt !== attempt || position.itemId !== itemId || !Number.isFinite(position.time)) return NaN;
