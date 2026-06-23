@@ -3,6 +3,7 @@ const path = require("node:path");
 const express = require("express");
 const cors = require("cors");
 const http = require("node:http");
+const dgram = require("node:dgram");
 const { Server } = require("socket.io");
 const config = require("./config.js");
 
@@ -13,6 +14,10 @@ const rooms = new Map();
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
+app.get("/api/ntp-time", async (_req, res) => {
+  if (!ntpUpdatedAt || Date.now() - ntpUpdatedAt > NTP_POLL_INTERVAL_MS) await refreshNtpOffset();
+  res.json({ now: ntpNow(), offset: ntpOffsetMs, syncedAt: ntpUpdatedAt, host: NTP_HOST });
+});
 app.get("/api/metadata", async (req, res) => {
   const url = String(req.query.url || "");
   res.json(await getMetadata(url));
