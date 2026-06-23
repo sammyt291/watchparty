@@ -12,7 +12,10 @@ let currentVideoId = null;
 let ignorePlayerEvents = false;
 let ytReady = false;
 let pingStart = 0;
+let pingSamples = [];
 let playbackUnlocked = false;
+let syncStatus = "Pending";
+let syncTimer = null;
 
 if (!roomId) renderSplash(); else renderRoom(roomId);
 
@@ -30,12 +33,18 @@ function renderRoom(id) {
   }
   app.innerHTML = `<main class="room"><section class="stage"><div id="video" class="video"><div class="empty">Add a YouTube or Facebook video URL</div></div><div class="controls"><button id="playPause">Play</button><input id="seek" type="range" min="0" max="1000" value="0"/></div><div id="users" class="users"></div></section><aside class="playlist"><h2>Room ${escapeHtml(id)}</h2><input id="urlInput" placeholder="Paste URL and press Enter"/><div id="queue"></div></aside></main><div id="playbackGate" class="playback-gate" role="dialog" aria-modal="true" aria-labelledby="playbackGateTitle"><div class="playback-gate__panel"><h2 id="playbackGateTitle">Enable playback</h2><p>Your browser needs a click before shared room media can play.</p><button id="enablePlayback" class="primary">Enable</button></div></div>`;
   socket = io(serverHost, { query: { roomId: id, name } });
-  socket.on("state", (state) => { playlist = state.playlist; playback = state.playback; users = state.users; paintAll(); updatePlaybackGate(); });
+  socket.on("state", (state) => { playlist = state.playlist; playback = localPlayback(state.playback); users = state.users; setSyncStatus("Joining"); paintAll(); updatePlaybackGate(); });
   socket.on("playlist", (next) => { playlist = next; paintQueue(); loadCurrent(); });
-  socket.on("playback", (next) => { const changed = next.itemId !== playback.itemId; playback = next; updatePlaybackGate(); if (changed) loadCurrent(); else applyPlayback(); });
+  socket.on("playback", (next) => { const changed = next.itemId !== playback.itemId; playback = localPlayback(next); setSyncStatus("Syncing"); updatePlaybackGate(); if (changed) loadCurrent(); else applyPlayback(true); scheduleSyncedStatus(); });
   socket.on("users", (next) => { users = next; paintUsers(); });
-  socket.on("serverPong", () => socket?.emit("pongMs", Date.now() - pingStart));
-  setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 3000);
+  socket.on("serverPong", () => {
+    const ping = Date.now() - pingStart;
+    pingSamples.push(ping);
+    pingSamples = pingSamples.slice(-10);
+    socket?.emit("pongMs", ping);
+    if (syncStatus === "Syncing" && pingSamples.length >= 3) applyFineSyncAdjustment();
+  });
+  setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 500);
   byId("playPause").onclick = togglePlay;
   byId("seek").oninput = seek;
   byId("urlInput").onkeydown = addUrl;
@@ -66,7 +75,10 @@ function paintQueue() {
   });
   document.querySelectorAll("[data-del]").forEach((button) => button.onclick = (event) => { event.stopPropagation(); playlist = playlist.filter((i) => i.id !== button.dataset.del); if (playback.itemId === button.dataset.del) playback.itemId = playlist[0]?.id || null; emitPlaylist(); });
 }
-function paintUsers() { byId("users").innerHTML = users.map((u) => `<button class="user" data-own="${u.id === socket?.id}">${escapeHtml(u.name)}<small>${u.ping ?? "—"}ms</small>${u.id === socket?.id ? "✎" : ""}</button>`).join(""); document.querySelector('[data-own="true"]')?.addEventListener("click", editName); }
+function paintUsers() {
+  byId("users").innerHTML = users.map((u) => `<button class="user" data-own="${u.id === socket?.id}" data-sync="${escapeHtml(u.syncStatus || "Pending")}">${escapeHtml(u.name)}<small>${escapeHtml(u.syncStatus || "Pending")} · ${u.ping ?? "—"}ms</small>${u.id === socket?.id ? "✎" : ""}</button>`).join("");
+  document.querySelector('[data-own="true"]')?.addEventListener("click", editName);
+}
 function loadCurrent() {
   const item = playlist.find((i) => i.id === playback.itemId);
   paintQueue();
@@ -102,13 +114,13 @@ function onYouTubeReady() {
   sizeYouTubeIframe();
   applyPlayback();
 }
-function applyPlayback() {
+function applyPlayback(fineAdjust = false) {
   byId("playPause").textContent = playback.playing ? "Pause" : "Play";
   if (!ytReady || !isYouTubePlayer()) return;
 
   const t = playback.playing ? playback.time + (Date.now() - playback.updatedAt) / 1000 : playback.time;
   withIgnoredPlayerEvents(() => {
-    if (hasYtMethod("seekTo")) ytPlayer.seekTo(t, true);
+    if (hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
     if (!playback.playing && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
     if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) ytPlayer.playVideo();
   });
@@ -128,12 +140,17 @@ function togglePlay() { unlockPlayback(); emitPlayback(!playback.playing); }
 function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
 setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); }, 500);
 function emitPlaylist() { socket?.emit("playlist", playlist); paintQueue(); loadCurrent(); }
-function emitPlayback(playing = playback.playing, time = getYtTime() || playback.time, itemId = playback.itemId) { playback = { itemId, playing, time, updatedAt: Date.now() }; socket?.emit("playback", playback); loadCurrent(); }
+function emitPlayback(playing = playback.playing, time = getYtTime() || playback.time, itemId = playback.itemId) { setSyncStatus("Pending"); socket?.emit("playback", { itemId, playing, time }); }
 function playPlaylistItem(itemId) { if (!itemId || itemId === playback.itemId) return; unlockPlayback(); emitPlayback(true, 0, itemId); }
 function reorder(event, targetId) { event.preventDefault(); event.stopPropagation(); const id = event.dataTransfer?.getData("text/plain"); if (!id || id === targetId) return; const dragged = playlist.find((i) => i.id === id); playlist = playlist.filter((i) => i.id !== id); playlist.splice(playlist.findIndex((i) => i.id === targetId), 0, dragged); emitPlaylist(); }
 function editName() { const next = prompt("Edit your display name", localStorage.getItem("watchparty:name") || ""); if (next) { localStorage.setItem("watchparty:name", next); socket?.emit("setName", next); } }
 function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); applyPlayback(); }
-function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", playbackUnlocked || !playback.playing); }
+function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", playbackUnlocked || (!playback.playing && !playback.itemId)); }
+function localPlayback(next) { return { ...next, updatedAt: Date.now() }; }
+function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length : 0; }
+function applyFineSyncAdjustment() { applyPlayback(true); scheduleSyncedStatus(); }
+function scheduleSyncedStatus() { clearTimeout(syncTimer); syncTimer = setTimeout(() => setSyncStatus("Sync"), 700 + avgPing()); }
+function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); }
 function withIgnoredPlayerEvents(callback) { ignorePlayerEvents = true; callback(); setTimeout(() => { ignorePlayerEvents = false; }, 1000); }
 function isYouTubePlayer() { return ytPlayer && typeof ytPlayer === "object" && hasYtMethod("getIframe"); }
 function hasYtMethod(method) { return typeof ytPlayer?.[method] === "function"; }

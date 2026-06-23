@@ -39,9 +39,9 @@ io.on("connection", (socket) => {
   const room = getRoom(roomId);
   const ip = getIp(socket.handshake.address);
   const name = safeName(String(socket.handshake.query.name || ""));
-  room.users.set(socket.id, { id: socket.id, name, ip, ping: null });
+  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining" });
   socket.join(roomId);
-  socket.emit("state", serialize(room));
+  socket.emit("state", serializeForSocket(room, socket.id));
   broadcastUsers(roomId);
   logRooms();
 
@@ -58,7 +58,21 @@ io.on("connection", (socket) => {
   socket.on("pongMs", (ping) => {
     const user = room.users.get(socket.id);
     if (!user) return;
-    user.ping = Number.isFinite(ping) ? Math.max(0, Math.round(ping)) : null;
+    const nextPing = Number.isFinite(ping) ? Math.max(0, Math.round(ping)) : null;
+    if (nextPing == null) {
+      user.ping = null;
+    } else {
+      user.pings.push(nextPing);
+      user.pings = user.pings.slice(-10);
+      user.ping = Math.round(user.pings.reduce((sum, value) => sum + value, 0) / user.pings.length);
+    }
+    broadcastUsers(roomId);
+  });
+
+  socket.on("syncStatus", (status) => {
+    const user = room.users.get(socket.id);
+    if (!user) return;
+    user.syncStatus = cleanSyncStatus(status);
     broadcastUsers(roomId);
   });
 
@@ -68,8 +82,8 @@ io.on("connection", (socket) => {
     if (room.playback.itemId && !room.playlist.some((item) => item.id === room.playback.itemId)) {
       room.playback = { itemId: room.playlist[0]?.id || null, playing: false, time: 0, updatedAt: Date.now() };
     }
-    io.to(roomId).emit("playlist", room.playlist);
-    io.to(roomId).emit("playback", room.playback);
+    broadcastPlaylist(roomId, room);
+    schedulePlayback(roomId, room, room.playback);
   });
 
   socket.on("playback", (playback) => {
@@ -80,7 +94,7 @@ io.on("connection", (socket) => {
       time: Number.isFinite(playback.time) ? Math.max(0, Number(playback.time)) : room.playback.time,
       updatedAt: Date.now(),
     };
-    socket.to(roomId).emit("playback", room.playback);
+    schedulePlayback(roomId, room, room.playback);
   });
 
   socket.on("disconnect", () => {
@@ -103,8 +117,22 @@ function getRoom(id) {
   }
   return room;
 }
-function serialize(room) { return { playlist: room.playlist, playback: room.playback, users: [...room.users.values()] }; }
-function broadcastUsers(roomId) { io.to(roomId).emit("users", [...(rooms.get(roomId)?.users.values() || [])]); }
+function serializeForSocket(room, socketId) { return { playlist: room.playlist, playback: playbackForUser(room, socketId), users: publicUsers(room) }; }
+function publicUsers(room) { return [...room.users.values()].map(({ id, name, ip, ping, syncStatus }) => ({ id, name, ip, ping, syncStatus })); }
+function broadcastUsers(roomId) { const room = rooms.get(roomId); if (room) io.to(roomId).emit("users", publicUsers(room)); }
+function broadcastPlaylist(roomId, room) { io.to(roomId).emit("playlist", room.playlist); }
+function schedulePlayback(roomId, room, basePlayback) {
+  const maxPing = Math.max(0, ...[...room.users.values()].map((user) => user.ping || 0));
+  for (const [socketId, user] of room.users) {
+    const delay = Math.max(0, maxPing - (user.ping || 0));
+    setTimeout(() => io.to(socketId).emit("playback", playbackForUser(room, socketId, basePlayback)), delay);
+  }
+}
+function playbackForUser(room, socketId, basePlayback = room.playback) {
+  const user = room.users.get(socketId);
+  const elapsed = basePlayback.playing ? (Date.now() - basePlayback.updatedAt + (user?.ping || 0) / 2) / 1000 : 0;
+  return { ...basePlayback, time: Math.max(0, basePlayback.time + elapsed), updatedAt: Date.now() };
+}
 function logRooms() {
   console.clear();
   console.log("Rooms");
@@ -117,6 +145,7 @@ function safeRoomId(value) { return value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0
 function safeName(value) { return String(value).replace(/[\t\n\r]/g, " ").trim().slice(0, 32) || "Quiet Otter"; }
 function getIp(address) { return address.replace(/^::ffff:/, ""); }
 function cleanItem(item) { return item?.id && item?.url ? { ...item, title: item.title || item.url } : null; }
+function cleanSyncStatus(status) { return ["Pending", "Joining", "Syncing", "Sync"].includes(status) ? status : "Pending"; }
 function provider(url) {
   if (/youtu\.be|youtube\.com/i.test(url)) return "youtube";
   if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";
