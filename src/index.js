@@ -19,6 +19,7 @@ let playbackUnlocked = false;
 let syncStatus = "Pending";
 let syncTimer = null;
 let pendingLocalPlaylist = false;
+let syncAdjustmentCycle = null;
 const VOLUME_STORAGE_KEY = "watchparty:volume";
 let playerVolume = readStoredVolume();
 
@@ -66,6 +67,12 @@ function renderRoom(id) {
   socket.on("playlist", (next) => { pendingLocalPlaylist = false; playlist = next; paintQueue(); loadCurrent(); });
   socket.on("playback", (next) => { const wasPlaying = playback.playing; const changed = next.itemId !== playback.itemId; playback = localPlayback(next); updatePlaybackGate(); beginSync(); if (changed) loadCurrent(); else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing }); });
   socket.on("users", (next) => { users = next; paintUsers(); });
+  socket.on("syncCheck", (check) => {
+    socket?.emit("playbackPosition", { itemId: playback.itemId, playing: playback.playing, time: getCurrentSeekTime(), cycle: check?.cycle });
+  });
+  socket.on("syncAdjustment", (adjustment) => {
+    applyServerSyncAdjustment(adjustment);
+  });
   socket.on("serverPong", () => {
     const ping = Date.now() - pingStart;
     pingSamples.push(ping);
@@ -132,7 +139,7 @@ function paintQueue() {
   document.querySelectorAll("[data-del]").forEach((button) => button.onclick = (event) => { event.stopPropagation(); playlist = playlist.filter((i) => i.id !== button.dataset.del); if (playback.itemId === button.dataset.del) playback = { ...playback, playing: false, updatedAt: Date.now() }; emitPlaylist(); });
 }
 function paintUsers() {
-  byId("users").innerHTML = users.map((u) => `<button class="user" data-own="${u.id === socket?.id}" data-sync="${escapeHtml(u.syncStatus || "Pending")}">${escapeHtml(u.name)}<small>${escapeHtml(u.syncStatus || "Pending")} · ${u.ping ?? "—"}ms</small>${u.id === socket?.id ? "✎" : ""}</button>`).join("");
+  byId("users").innerHTML = users.map((u) => `<button class="user" data-own="${u.id === socket?.id}" data-sync="${escapeHtml(u.syncStatus || "Pending")}"><span class="user-name">${escapeHtml(u.name)}${u.id === socket?.id ? " ✎" : ""}</span><small>${escapeHtml(u.syncStatus || "Pending")} · ${u.ping ?? "—"}ms</small><small class="user-time">${formatSeekTime(u.seekTime)}</small></button>`).join("");
   document.querySelector('[data-own="true"]')?.addEventListener("click", editName);
 }
 function loadCurrent() {
@@ -253,6 +260,23 @@ function isYouTubePlayer() { return ytPlayer && typeof ytPlayer === "object" && 
 function hasYtMethod(method) { return typeof ytPlayer?.[method] === "function"; }
 function getYtDuration() { return hasYtMethod("getDuration") ? ytPlayer.getDuration() || 0 : 0; }
 function getYtTime() { return hasYtMethod("getCurrentTime") ? ytPlayer.getCurrentTime() || 0 : 0; }
+function getCurrentSeekTime() { return isYouTubePlayer() ? getYtTime() : targetPlaybackTime(); }
+function applyServerSyncAdjustment(adjustment) {
+  if (!adjustment || adjustment.itemId !== playback.itemId || syncAdjustmentCycle === adjustment.cycle) return;
+  const skipAhead = Number(adjustment.skipAhead);
+  if (!Number.isFinite(skipAhead) || skipAhead <= 0.01 || !isYouTubePlayer() || !hasYtMethod("seekTo")) return;
+  syncAdjustmentCycle = adjustment.cycle;
+  withIgnoredPlayerEvents(() => ytPlayer.seekTo(getYtTime() + skipAhead, true));
+}
+function formatSeekTime(time) {
+  const seconds = Number(time);
+  if (!Number.isFinite(seconds)) return "--:--";
+  const whole = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const s = whole % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+}
 function sizeYouTubeIframe() {
   const iframe = hasYtMethod("getIframe") ? ytPlayer.getIframe() : byId("video")?.querySelector("iframe");
   if (!iframe) return;

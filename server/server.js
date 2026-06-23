@@ -10,6 +10,9 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
+const SYNC_CHECK_INTERVAL_MS = 5000;
+const SYNC_CHECK_RESPONSE_MS = 750;
+const SYNC_ADJUST_THRESHOLD_SECONDS = 0.01;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -38,7 +41,7 @@ io.on("connection", (socket) => {
   const room = getRoom(roomId);
   const ip = getIp(socket.handshake.address);
   const name = safeName(String(socket.handshake.query.name || ""));
-  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining" });
+  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, adjustedCycle: null });
   socket.join(roomId);
   socket.emit("state", serializeForSocket(room, socket.id));
   broadcastUsers(roomId);
@@ -69,6 +72,21 @@ io.on("connection", (socket) => {
     broadcastUsers(roomId);
   });
 
+  socket.on("playbackPosition", (position) => {
+    const user = room.users.get(socket.id);
+    if (!user) return;
+    const time = Number(position?.time);
+    user.seekTime = Number.isFinite(time) ? Math.max(0, time) : null;
+    user.position = {
+      itemId: typeof position?.itemId === "string" ? position.itemId : null,
+      playing: Boolean(position?.playing),
+      time: user.seekTime,
+      receivedAt: Date.now(),
+      cycle: Number.isInteger(position?.cycle) ? position.cycle : room.adjustmentCycle,
+    };
+    broadcastUsers(roomId);
+  });
+
   socket.on("syncStatus", (status) => {
     const user = room.users.get(socket.id);
     if (!user) return;
@@ -90,9 +108,16 @@ io.on("connection", (socket) => {
 
   socket.on("playback", (playback) => {
     const requestedItem = typeof playback.itemId === "string" ? playback.itemId : room.playback.itemId;
+    const nextPlaying = Boolean(playback.playing);
+    const nextItemId = room.playlist.some((item) => item.id === requestedItem) ? requestedItem : room.playback.itemId;
+    const startsPlaybackCycle = nextPlaying && (!room.playback.playing || nextItemId !== room.playback.itemId);
+    if (startsPlaybackCycle) {
+      room.adjustmentCycle += 1;
+      for (const user of room.users.values()) user.adjustedCycle = null;
+    }
     room.playback = {
-      itemId: room.playlist.some((item) => item.id === requestedItem) ? requestedItem : room.playback.itemId,
-      playing: Boolean(playback.playing),
+      itemId: nextItemId,
+      playing: nextPlaying,
       time: Number.isFinite(playback.time) ? Math.max(0, Number(playback.time)) : room.playback.time,
       updatedAt: Date.now(),
     };
@@ -110,16 +135,17 @@ io.on("connection", (socket) => {
 server.listen(config.PORT, config.HOST, () => {
   console.log(`WatchParty listening on http://${config.HOST}:${config.PORT}`);
 });
+setInterval(checkRoomSync, SYNC_CHECK_INTERVAL_MS);
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
-    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [] };
+    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0 };
     rooms.set(id, room);
   }
   return room;
 }
 function serializeForSocket(room, socketId) { return { playlist: room.playlist, playback: playbackForUser(room, socketId), users: publicUsers(room) }; }
-function publicUsers(room) { return [...room.users.values()].map(({ id, name, ip, ping, syncStatus }) => ({ id, name, ip, ping, syncStatus })); }
+function publicUsers(room) { return [...room.users.values()].map(({ id, name, ip, ping, syncStatus, seekTime }) => ({ id, name, ip, ping, syncStatus, seekTime })); }
 function broadcastUsers(roomId) { const room = rooms.get(roomId); if (room) io.to(roomId).emit("users", publicUsers(room)); }
 function broadcastPlaylist(roomId, room) { io.to(roomId).emit("playlist", room.playlist); }
 function schedulePlayback(roomId, room, basePlayback, originId = null) {
@@ -150,6 +176,38 @@ function playbackForUser(room, socketId, basePlayback = room.playback, originId 
     time: Math.max(0, basePlayback.time + elapsedMs / 1000),
     updatedAt: now,
   };
+}
+function checkRoomSync() {
+  const startedAt = Date.now();
+  for (const [roomId, room] of rooms) {
+    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2) continue;
+    io.to(roomId).emit("syncCheck", { itemId: room.playback.itemId, cycle: room.adjustmentCycle });
+    setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.playback.itemId), SYNC_CHECK_RESPONSE_MS);
+  }
+}
+function adjustRoomSync(roomId, checkStartedAt, cycle, itemId) {
+  const room = rooms.get(roomId);
+  if (!room || !room.playback.playing || room.playback.itemId !== itemId || room.adjustmentCycle !== cycle) return;
+  const positions = [...room.users.values()]
+    .map((user) => ({ user, position: user.position, currentTime: adjustedPositionTime(user, checkStartedAt, cycle, itemId) }))
+    .filter((entry) => Number.isFinite(entry.currentTime));
+  if (positions.length < 2) return;
+  const furthestTime = Math.max(...positions.map((entry) => entry.currentTime));
+  for (const { user, currentTime } of positions) {
+    if (user.adjustedCycle === cycle) continue;
+    const skipAhead = furthestTime - currentTime;
+    if (skipAhead <= SYNC_ADJUST_THRESHOLD_SECONDS) continue;
+    user.adjustedCycle = cycle;
+    io.to(user.id).emit("syncAdjustment", { itemId, cycle, skipAhead });
+  }
+}
+function adjustedPositionTime(user, checkStartedAt, cycle, itemId) {
+  const position = user.position;
+  if (!position || position.cycle !== cycle || position.itemId !== itemId || !Number.isFinite(position.time)) return NaN;
+  if (position.receivedAt < checkStartedAt) return NaN;
+  const receiveDelaySeconds = (user.ping || 0) / 1000;
+  const elapsedSinceReceiveSeconds = position.playing ? Math.max(0, Date.now() - position.receivedAt) / 1000 : 0;
+  return Math.max(0, position.time + receiveDelaySeconds + elapsedSinceReceiveSeconds);
 }
 function clearPlaybackTimers(room) {
   for (const timer of room.playbackTimers || []) clearTimeout(timer);

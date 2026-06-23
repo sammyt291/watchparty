@@ -26,9 +26,11 @@ h1 { font-size: clamp(3rem, 12vw, 7rem); margin: 0; letter-spacing: -.08em; text
 #volume::-webkit-slider-runnable-track { height: .5rem; border-radius: 999px; background: linear-gradient(90deg, #45d483, #ffce6a 52%, #ff4d4d); }
 #volume::-moz-range-track { height: .5rem; border-radius: 999px; background: linear-gradient(90deg, #45d483, #ffce6a 52%, #ff4d4d); }
 .users { min-height: 64px; display: flex; flex-wrap: wrap; gap: .5rem; align-content: start; }
-.user { display: inline-flex; gap: .5rem; align-items: center; padding: .55rem .75rem; border: 1px solid #3b4460; background: #171c2a; }
+.user { display: inline-flex; flex-direction: column; gap: .18rem; align-items: flex-start; padding: .55rem .75rem; border: 1px solid #3b4460; background: #171c2a; text-align: left; }
 .user[data-own="true"] { border-color: #ffbd59; }
 .user small { color: #98a1bb; }
+.user-name { font-weight: 800; }
+.user-time { font-variant-numeric: tabular-nums; }
 .playlist { display: flex; flex-direction: column; gap: .7rem; min-width: 0; }
 h2 { font-size: 1rem; overflow-wrap: anywhere; margin: 0; color: #ffce6a; }
 #urlInput { width: 100%; }
