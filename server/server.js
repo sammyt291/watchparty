@@ -19,16 +19,13 @@ app.get("/api/metadata", async (req, res) => {
   res.json(await getMetadata(url));
 });
 
-const buildPath = path.resolve(__dirname, "..", config.BUILD_DIRECTORY);
-const indexPath = path.join(buildPath, "index.html");
-const hasClientBuild = fs.existsSync(indexPath);
+const publicPath = path.resolve(__dirname, "..", config.PUBLIC_DIRECTORY);
+const indexPath = path.join(publicPath, "index.html");
 
-app.use(express.static(buildPath));
+app.use(express.static(publicPath));
 app.get(/.*/, (_req, res) => {
-  if (!hasClientBuild) {
-    res.status(503).send(
-      `Client build not found at ${indexPath}. Run "npm run build" before "npm start", or use "npm run dev" during development.`,
-    );
+  if (!fs.existsSync(indexPath)) {
+    res.status(503).send(`Client files not found at ${indexPath}.`);
     return;
   }
 

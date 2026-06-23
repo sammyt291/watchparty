@@ -23,16 +23,15 @@ npm install
 npm run dev
 ```
 
-The server defaults to `http://localhost:8080`; the Vite UI defaults to `http://localhost:5173`.
+The server defaults to `http://localhost:8080` and serves the plain static client from `public/`.
 
-## Build and run
+## Run without watch mode
 
 ```sh
-npm run build
 npm start
 ```
 
-Then open `http://localhost:8080`.
+Then open `http://localhost:8080`. No build step is required.
 
 ## Configuration
 
@@ -40,5 +39,4 @@ Environment variables are optional:
 
 - `HOST` — server bind host, default `0.0.0.0`.
 - `PORT` — server port, default `8080`.
-- `BUILD_DIRECTORY` — production client build directory, default `build`.
-- `VITE_SERVER_HOST` — dev UI server target, default `http://localhost:$PORT` when using `npm run dev`.
+- `PUBLIC_DIRECTORY` — static client directory, default `public`.

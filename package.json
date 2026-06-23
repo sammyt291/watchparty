@@ -4,18 +4,11 @@
   "private": true,
   "scripts": {
     "start": "node server/server.js",
-    "ui": "vite --host",
-    "dev": "node scripts/dev.cjs",
-    "build": "vite build",
-    "dev:server": "node --watch server/server.js"
+    "dev": "node --watch server/server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^5.2.1",
-    "socket.io": "^4.8.1",
-    "socket.io-client": "^4.8.1"
-  },
-  "devDependencies": {
-    "vite": "^7.2.7"
+    "socket.io": "^4.8.1"
   }
 }
