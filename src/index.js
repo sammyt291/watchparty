@@ -1,10 +1,7 @@
-import { io } from "socket.io-client";
-import "./style.css";
-
 const verbs = ["Brave", "Calm", "Dancing", "Flying", "Gentle", "Happy", "Lucky", "Mighty", "Swift", "Witty"];
 const nouns = ["Badger", "Falcon", "Koala", "Otter", "Panda", "Raven", "Tiger", "Turtle", "Whale", "Wolf"];
 const app = document.querySelector("#app");
-const serverHost = import.meta.env.VITE_SERVER_HOST || location.origin;
+const serverHost = location.origin;
 const roomId = getRoomId();
 let socket = null;
 let playlist = [];
