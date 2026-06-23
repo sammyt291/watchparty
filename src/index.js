@@ -271,11 +271,13 @@ function applyServerSyncAdjustment(adjustment) {
 function formatSeekTime(time) {
   const seconds = Number(time);
   if (!Number.isFinite(seconds)) return "--:--";
-  const whole = Math.max(0, Math.floor(seconds));
+  const tenths = Math.max(0, Math.round(seconds * 10));
+  const whole = Math.floor(tenths / 10);
   const h = Math.floor(whole / 3600);
   const m = Math.floor((whole % 3600) / 60);
   const s = whole % 60;
-  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+  const d = tenths % 10;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${d}` : `${m}:${String(s).padStart(2, "0")}.${d}`;
 }
 function sizeYouTubeIframe() {
   const iframe = hasYtMethod("getIframe") ? ytPlayer.getIframe() : byId("video")?.querySelector("iframe");

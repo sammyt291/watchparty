@@ -13,6 +13,7 @@ const rooms = new Map();
 const SYNC_CHECK_INTERVAL_MS = 5000;
 const SYNC_CHECK_RESPONSE_MS = 750;
 const SYNC_ADJUST_THRESHOLD_SECONDS = 0.01;
+const YOUTUBE_SEEK_BUFFER_SECONDS = 0.075;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -198,7 +199,7 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, itemId) {
     const skipAhead = furthestTime - currentTime;
     if (skipAhead <= SYNC_ADJUST_THRESHOLD_SECONDS) continue;
     user.adjustedCycle = cycle;
-    io.to(user.id).emit("syncAdjustment", { itemId, cycle, skipAhead });
+    io.to(user.id).emit("syncAdjustment", { itemId, cycle, skipAhead: skipAhead + YOUTUBE_SEEK_BUFFER_SECONDS });
   }
 }
 function adjustedPositionTime(user, checkStartedAt, cycle, itemId) {
