@@ -94,7 +94,7 @@ async function addUrl() {
   const url = normalizeUrlInput(input.value);
   if (!url) return;
 
-  const item = { id: crypto.randomUUID(), url, provider: providerFromUrl(url), title: url };
+  const item = { id: createItemId(), url, provider: providerFromUrl(url), title: url };
   input.value = "";
   playlist.push(item);
   if (!playback.itemId) playback = { ...playback, itemId: item.id, playing: false, time: 0, updatedAt: Date.now() };
@@ -110,6 +110,12 @@ async function addUrl() {
     console.warn("Unable to load URL metadata", error);
   }
 }
+function createItemId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
+  const randomPart = Math.random().toString(36).slice(2);
+  return `${Date.now().toString(36)}-${randomPart}`;
+}
+
 function paintAll() { paintQueue(); paintUsers(); loadCurrent(); }
 function paintQueue() {
   byId("queue").innerHTML = playlist.map((item) => `<article class="card" draggable="true" data-id="${item.id}" data-current="${item.id === playback.itemId}">${item.thumbnail ? `<img src="${item.thumbnail}"/>` : ""}<div><b>${escapeHtml(item.title)}</b><small>${item.provider}${item.duration ? ` · ${item.duration}` : ""}${item.views ? ` · ${item.views}` : ""}</small></div><button data-del="${item.id}" aria-label="Remove">×</button></article>`).join("");
