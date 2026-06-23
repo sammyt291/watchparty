@@ -232,6 +232,7 @@ function targetPlaybackTime() {
 function beginSync(mode = "initial") {
   if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
   syncOverlayMode = mode;
+  if (!playback.itemId) { setSyncStatus("Sync"); return; }
   setSyncStatus("Syncing");
   updateClientSyncHappiness();
 }
