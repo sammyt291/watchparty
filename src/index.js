@@ -23,6 +23,7 @@ let playbackUnlocked = false;
 let syncStatus = "Pending";
 let syncTimer = null;
 let scheduledPlayTimer = null;
+let pendingLocalPlaylist = false;
 
 if (!roomId) renderSplash(); else renderRoom(roomId);
 
@@ -53,8 +54,19 @@ function renderRoom(id) {
   }
   app.innerHTML = `<main class="room"><section class="stage"><div id="video" class="video"><div class="empty">Add a YouTube or Facebook video URL</div><div id="syncOverlay" class="sync-overlay is-hidden" aria-live="polite">Syncing playback…</div></div><div class="controls"><button id="playPause">Play</button><input id="seek" type="range" min="0" max="1000" value="0"/></div><div id="users" class="users"></div></section><aside class="playlist"><h2>Room ${escapeHtml(id)}</h2><form id="urlForm" class="url-form"><input id="urlInput" placeholder="Paste URL and press Enter"/></form><div id="queue"></div></aside></main><div id="playbackGate" class="playback-gate" role="dialog" aria-modal="true" aria-labelledby="playbackGateTitle"><div class="playback-gate__panel"><h2 id="playbackGateTitle">Enable playback</h2><p>Your browser needs a click before shared room media can play.</p><button id="enablePlayback" class="primary">Enable</button></div></div>`;
   socket = io(serverHost, { query: { roomId: id, name } });
-  socket.on("state", (state) => { playlist = state.playlist; playback = localPlayback(state.playback); users = state.users; setSyncStatus("Joining"); paintAll(); updatePlaybackGate(); if (!isPlaybackGateVisible()) beginSync(); });
-  socket.on("playlist", (next) => { playlist = next; paintQueue(); loadCurrent(); });
+  socket.on("state", (state) => {
+    if (!pendingLocalPlaylist) {
+      playlist = state.playlist;
+      playback = localPlayback(state.playback);
+    }
+    users = state.users;
+    setSyncStatus("Joining");
+    paintAll();
+    updatePlaybackGate();
+    if (pendingLocalPlaylist) emitPlaylist();
+    if (!isPlaybackGateVisible()) beginSync();
+  });
+  socket.on("playlist", (next) => { pendingLocalPlaylist = false; playlist = next; paintQueue(); loadCurrent(); });
   socket.on("playback", (next) => { const changed = next.itemId !== playback.itemId; playback = localPlayback(next); updatePlaybackGate(); beginSync(); if (changed) loadCurrent(); else applyPlayback(true); });
   socket.on("users", (next) => { users = next; paintUsers(); });
   socket.on("serverPong", () => {
@@ -80,13 +92,24 @@ function handleUrlInputKeydown(event) {
 }
 async function addUrl() {
   const input = byId("urlInput");
-  const url = input.value.trim();
+  const url = normalizeUrlInput(input.value);
   if (!url) return;
+
+  const item = { id: crypto.randomUUID(), url, provider: providerFromUrl(url), title: url };
   input.value = "";
-  const meta = await (await fetch(`${serverHost}/api/metadata?url=${encodeURIComponent(url)}`)).json();
-  playlist.push({ id: crypto.randomUUID(), ...meta });
-  if (!playback.itemId) playback = { ...playback, itemId: playlist[0].id, playing: false, time: 0, updatedAt: Date.now() };
+  playlist.push(item);
+  if (!playback.itemId) playback = { ...playback, itemId: item.id, playing: false, time: 0, updatedAt: Date.now() };
   emitPlaylist();
+
+  try {
+    const response = await fetch(`${serverHost}/api/metadata?url=${encodeURIComponent(url)}`);
+    if (!response.ok) return;
+    const meta = await response.json();
+    playlist = playlist.map((current) => (current.id === item.id ? { ...current, ...meta, id: item.id, url } : current));
+    emitPlaylist();
+  } catch (error) {
+    console.warn("Unable to load URL metadata", error);
+  }
 }
 function paintAll() { paintQueue(); paintUsers(); loadCurrent(); }
 function paintQueue() {
@@ -171,7 +194,7 @@ function onYouTubeError(e) {
 function togglePlay() { unlockPlayback(); emitPlayback(!playback.playing); }
 function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
 setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); }, 500);
-function emitPlaylist() { socket?.emit("playlist", playlist); paintQueue(); loadCurrent(); }
+function emitPlaylist() { pendingLocalPlaylist = true; socket?.emit("playlist", playlist); paintQueue(); loadCurrent(); }
 function emitPlayback(playing = playback.playing, time = getYtTime() || playback.time, itemId = playback.itemId) { setSyncStatus("Pending"); socket?.emit("playback", { itemId, playing, time }); }
 function playPlaylistItem(itemId) { if (!itemId || itemId === playback.itemId) return; unlockPlayback(); emitPlayback(true, 0, itemId); }
 function reorder(event, targetId) { event.preventDefault(); event.stopPropagation(); const id = event.dataTransfer?.getData("text/plain"); if (!id || id === targetId) return; const dragged = playlist.find((i) => i.id === id); playlist = playlist.filter((i) => i.id !== id); playlist.splice(playlist.findIndex((i) => i.id === targetId), 0, dragged); emitPlaylist(); }
@@ -241,11 +264,27 @@ function go(id) { location.href = `/watch/${id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
 function byId(id) { return document.getElementById(id); }
 function randomName() { return `${verbs[Math.floor(Math.random() * verbs.length)]} ${nouns[Math.floor(Math.random() * nouns.length)]}`; }
 function youtubeId(url) {
-  const parsed = new URL(url);
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "";
+  }
   if (parsed.hostname.includes("youtu.be")) return parsed.pathname.split("/").filter(Boolean)[0] || "";
   const pathParts = parsed.pathname.split("/").filter(Boolean);
   if (["embed", "shorts", "live"].includes(pathParts[0])) return pathParts[1] || "";
   return parsed.searchParams.get("v") || "";
+}
+function normalizeUrlInput(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+function providerFromUrl(url) {
+  if (/youtu\.be|youtube\.com/i.test(url)) return "youtube";
+  if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";
+  return "unknown";
 }
 function youtubePlayerVars() {
   return {
