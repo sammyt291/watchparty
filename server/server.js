@@ -15,6 +15,7 @@ const SYNC_INITIAL_STEP_MS = 100;
 const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 15;
 const SYNC_TARGET_TOLERANCE_MS = 50;
 const SYNC_DEBUG_MODE = true;
+const SYNC_OVERSHOOT_STEP_REDUCTION_PERCENT = 8;
 const PLAYBACK_START_SAFETY_MARGIN_MS = 50;
 const POST_PLAYBACK_SYNC_SETTLE_MS = 250;
 app.use(cors());
@@ -292,6 +293,13 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     if (user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1) continue;
     if (attempt >= MAX_SYNC_ADJUSTMENT_ATTEMPTS) {
       user.syncStatus = "No Sync";
+      if (user.syncAdjustmentState) trackBestSyncOffset(user.syncAdjustmentState, offset);
+      const finalSeekDelta = finalBestSyncAdjustment(user, offset);
+      if (Math.abs(finalSeekDelta) > 0.01 && !(user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1)) {
+        user.adjustedCycle = cycle;
+        user.adjustedAttempt = attempt + 1;
+        io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, seekDelta: finalSeekDelta, skipAhead: Math.max(0, finalSeekDelta), final: true });
+      }
       continue;
     }
     user.syncStatus = "Syncing";
@@ -344,16 +352,18 @@ function nextSyncAdjustment(user, cycle, offset, targetSeekDelta) {
       direction: Math.sign(targetSeekDelta),
       previousOffset: null,
       hasOvershot: false,
+      bestOffset: null,
     };
   }
 
   const state = user.syncAdjustmentState;
+  trackBestSyncOffset(state, offset);
   const previousOffset = Number.isFinite(state.previousOffset) ? state.previousOffset : null;
   const overshot = previousOffset != null && Math.sign(previousOffset) !== Math.sign(offset);
 
   if (overshot) {
     state.direction *= -1;
-    state.stepSeconds /= 2;
+    state.stepSeconds *= 1 - SYNC_OVERSHOOT_STEP_REDUCTION_PERCENT / 100;
     state.hasOvershot = true;
   }
 
@@ -364,6 +374,15 @@ function nextSyncAdjustment(user, cycle, offset, targetSeekDelta) {
   if (!overshot && !state.hasOvershot) state.stepSeconds *= 2;
 
   return seekDelta;
+}
+function trackBestSyncOffset(state, offset) {
+  if (!Number.isFinite(offset)) return;
+  if (!Number.isFinite(state.bestOffset) || Math.abs(offset) < Math.abs(state.bestOffset)) state.bestOffset = offset;
+}
+function finalBestSyncAdjustment(user, offset) {
+  const bestOffset = user.syncAdjustmentState?.bestOffset;
+  if (!Number.isFinite(offset) || !Number.isFinite(bestOffset)) return 0;
+  return bestOffset - offset;
 }
 function roomUsersAreSyncSettled(room) {
   return [...room.users.values()].every((user) => user.syncSettled);
