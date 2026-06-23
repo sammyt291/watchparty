@@ -18,7 +18,6 @@ const SYNC_ADJUSTMENT_PID_KI = 0.2;
 const SYNC_ADJUSTMENT_PID_KD = 0.35;
 const SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS = 1.5;
 const SYNC_ADJUSTMENT_MIN_SEEK_MS = 80;
-const SYNC_ADJUSTMENT_MAX_EXTRA_SEEK_MS = 750;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -122,6 +121,7 @@ io.on("connection", (socket) => {
       room.adjustmentCycle += 1;
       room.adjustmentAttempt = 0;
       room.syncCheckInProgress = false;
+      room.syncAnchorUserId = socket.id;
       for (const user of room.users.values()) {
         user.syncSettled = false;
         user.adjustedCycle = null;
@@ -136,8 +136,13 @@ io.on("connection", (socket) => {
       time: Number.isFinite(playback.time) ? Math.max(0, Number(playback.time)) : room.playback.time,
       updatedAt: Date.now(),
     };
+    if (startsPlaybackCycle) {
+      markPlaybackOriginInSync(room, socket.id);
+      broadcastUsers(roomId);
+    }
     if (!nextPlaying && room.playback.itemId) {
       room.syncCheckInProgress = false;
+      room.syncAnchorUserId = null;
       markRoomPausedInSync(room);
       broadcastUsers(roomId);
     }
@@ -147,7 +152,10 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     room.users.delete(socket.id);
     if (room.users.size === 0) rooms.delete(roomId);
-    else broadcastUsers(roomId);
+    else {
+      if (room.syncAnchorUserId === socket.id) room.syncAnchorUserId = null;
+      broadcastUsers(roomId);
+    }
     logRooms();
   });
 });
@@ -159,7 +167,7 @@ setInterval(checkRoomSync, SYNC_CHECK_INTERVAL_MS);
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
-    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false };
+    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false, syncAnchorUserId: null };
     rooms.set(id, room);
   }
   return room;
@@ -195,6 +203,22 @@ function playbackForUser(room, socketId, basePlayback = room.playback, originId 
     originId,
     time: Math.max(0, basePlayback.time + elapsedMs / 1000),
     updatedAt: now,
+  };
+}
+function markPlaybackOriginInSync(room, socketId) {
+  const user = room.users.get(socketId);
+  if (!user) return;
+  user.seekTime = room.playback.time;
+  user.seekOffset = 0;
+  user.syncStatus = "Sync";
+  user.syncSettled = true;
+  user.position = {
+    itemId: room.playback.itemId,
+    playing: room.playback.playing,
+    time: room.playback.time,
+    receivedAt: Date.now(),
+    cycle: room.adjustmentCycle,
+    attempt: room.adjustmentAttempt,
   };
 }
 function markRoomPausedInSync(room) {
@@ -238,14 +262,14 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     room.syncCheckInProgress = false;
     return;
   }
-  const furthestTime = Math.max(...positions.map((entry) => entry.currentTime));
+  const targetTime = syncTargetTime(room, positions);
   let adjusted = false;
   for (const { user, currentTime } of positions) {
-    const offset = currentTime - furthestTime;
+    const offset = currentTime - targetTime;
     user.seekOffset = offset;
     const measurement = recordSyncMeasurement(user, cycle, attempt, offset);
-    const skipAhead = -offset;
-    if (skipAhead <= secondsFromMs(SYNC_TARGET_TOLERANCE_MS)) {
+    const seekDelta = -offset;
+    if (Math.abs(seekDelta) <= secondsFromMs(SYNC_TARGET_TOLERANCE_MS)) {
       user.syncStatus = "Sync";
       user.syncSettled = true;
       continue;
@@ -260,9 +284,9 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     user.adjustedCycle = cycle;
     user.adjustedAttempt = attempt + 1;
     adjusted = true;
-    const requestedSkipAhead = computePidSyncAdjustment(user, skipAhead);
-    if (measurement) measurement.nextRequestedSkipAhead = requestedSkipAhead;
-    io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, skipAhead: requestedSkipAhead });
+    const requestedSeekDelta = computePidSyncAdjustment(user, seekDelta);
+    if (measurement) measurement.nextRequestedSeekDelta = requestedSeekDelta;
+    io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, seekDelta: requestedSeekDelta, skipAhead: Math.max(0, requestedSeekDelta) });
   }
   broadcastUsers(roomId);
   if (adjusted) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
@@ -287,6 +311,15 @@ function recheckRoomSync(roomId, cycle, attempt, itemId) {
 }
 
 function secondsFromMs(ms) { return ms / 1000; }
+function syncTargetTime(room, positions) {
+  const anchorPosition = positions.find(({ user }) => user.id === room.syncAnchorUserId && user.syncSettled && user.syncStatus === "Sync");
+  if (anchorPosition) return anchorPosition.currentTime;
+
+  const settledPositions = positions.filter(({ user }) => user.syncSettled && user.syncStatus === "Sync");
+  if (settledPositions.length > 0) return settledPositions.reduce((sum, entry) => sum + entry.currentTime, 0) / settledPositions.length;
+
+  return Math.max(...positions.map((entry) => entry.currentTime));
+}
 function recordSyncMeasurement(user, cycle, attempt, offset) {
   if (!user.syncHistory || user.syncHistory.cycle !== cycle) {
     user.syncHistory = { cycle, measurements: [] };
@@ -308,21 +341,22 @@ function recordSyncMeasurement(user, cycle, attempt, offset) {
   user.syncHistory.measurements = user.syncHistory.measurements.slice(-MAX_SYNC_ADJUSTMENT_ATTEMPTS - 1);
   return measurement;
 }
-function computePidSyncAdjustment(user, currentLag) {
+function computePidSyncAdjustment(user, targetSeekDelta) {
   const measurements = user.syncHistory?.measurements || [];
   const measurement = measurements[measurements.length - 1];
-  if (!measurement) return currentLag;
+  if (!measurement) return targetSeekDelta;
 
-  const proportional = SYNC_ADJUSTMENT_PID_KP * currentLag;
+  const proportional = SYNC_ADJUSTMENT_PID_KP * targetSeekDelta;
   const integral = SYNC_ADJUSTMENT_PID_KI * measurement.integral;
   const derivative = SYNC_ADJUSTMENT_PID_KD * measurement.derivative;
-  const requestedSkipAhead = proportional + integral + derivative;
-  const maxSeek = currentLag + secondsFromMs(SYNC_ADJUSTMENT_MAX_EXTRA_SEEK_MS);
-  const minSeek = Math.min(maxSeek, currentLag + secondsFromMs(SYNC_ADJUSTMENT_MIN_SEEK_MS));
+  const requestedSeekDelta = proportional + integral + derivative;
+  const minSeekDelta = Math.sign(targetSeekDelta) * Math.min(Math.abs(targetSeekDelta), secondsFromMs(SYNC_ADJUSTMENT_MIN_SEEK_MS));
 
   measurement.pid = { proportional, integral, derivative };
-  if (!Number.isFinite(requestedSkipAhead)) return minSeek;
-  return clamp(requestedSkipAhead, minSeek, maxSeek);
+  if (!Number.isFinite(requestedSeekDelta)) return targetSeekDelta;
+  return targetSeekDelta > 0
+    ? clamp(requestedSeekDelta, minSeekDelta, targetSeekDelta)
+    : clamp(requestedSeekDelta, targetSeekDelta, minSeekDelta);
 }
 function roomUsersAreSyncSettled(room) {
   return [...room.users.values()].every((user) => user.syncSettled);

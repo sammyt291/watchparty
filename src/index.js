@@ -65,7 +65,17 @@ function renderRoom(id) {
     if (!isPlaybackGateVisible()) beginSync();
   });
   socket.on("playlist", (next) => { pendingLocalPlaylist = false; playlist = next; paintQueue(); loadCurrent(); });
-  socket.on("playback", (next) => { const wasPlaying = playback.playing; const changed = next.itemId !== playback.itemId; playback = localPlayback(next); updatePlaybackGate(); beginSync(); if (changed) loadCurrent(); else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing }); });
+  socket.on("playback", (next) => {
+    const wasPlaying = playback.playing;
+    const changed = next.itemId !== playback.itemId;
+    const originatedHere = next.originId === socket?.id;
+    playback = localPlayback(next);
+    updatePlaybackGate();
+    if (originatedHere) setSyncStatus("Sync");
+    else beginSync();
+    if (changed) loadCurrent();
+    else applyPlayback(true, { skipSeek: originatedHere || (!wasPlaying && playback.playing) });
+  });
   socket.on("users", (next) => { users = next; syncOwnStatusFromUsers(); paintUsers(); });
   socket.on("syncCheck", (check) => {
     socket?.emit("playbackPosition", { itemId: playback.itemId, playing: playback.playing, time: getCurrentSeekTime(), cycle: check?.cycle, attempt: check?.attempt });
@@ -267,11 +277,12 @@ function getCurrentSeekTime() { return isYouTubePlayer() ? getYtTime() : targetP
 function applyServerSyncAdjustment(adjustment) {
   const adjustmentKey = `${adjustment?.cycle ?? ""}:${adjustment?.attempt ?? ""}`;
   if (!adjustment || adjustment.itemId !== playback.itemId || syncAdjustmentKey === adjustmentKey) return;
-  const skipAhead = Number(adjustment.skipAhead);
-  if (!Number.isFinite(skipAhead) || skipAhead <= 0.01 || !isYouTubePlayer() || !hasYtMethod("seekTo")) return;
+  const legacySkipAhead = Number(adjustment.skipAhead);
+  const seekDelta = Number.isFinite(Number(adjustment.seekDelta)) ? Number(adjustment.seekDelta) : legacySkipAhead;
+  if (!Number.isFinite(seekDelta) || Math.abs(seekDelta) <= 0.01 || !isYouTubePlayer() || !hasYtMethod("seekTo")) return;
   syncAdjustmentKey = adjustmentKey;
   beginSync("adjustment");
-  withIgnoredPlayerEvents(() => ytPlayer.seekTo(getYtTime() + skipAhead, true));
+  withIgnoredPlayerEvents(() => ytPlayer.seekTo(Math.max(0, getYtTime() + seekDelta), true));
   setTimeout(updateClientSyncHappiness, 100);
 }
 function updateClientSyncHappiness() {
