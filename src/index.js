@@ -82,7 +82,7 @@ function loadYoutube(url) {
     ensurePlayerHost();
     currentVideoId = id;
     ytReady = false;
-    ytPlayer = new window.YT.Player("player", { width: "100%", height: "100%", videoId: id, playerVars: { autoplay: playback.playing && playbackUnlocked ? 1 : 0, controls: 0, playsinline: 1, rel: 0, enablejsapi: 1, origin: location.origin }, events: { onReady: onYouTubeReady, onStateChange: syncFromPlayer, onError: onYouTubeError } });
+    ytPlayer = new window.YT.Player("player", { width: "100%", height: "100%", videoId: id, playerVars: { autoplay: playback.playing && playbackUnlocked ? 1 : 0, controls: 0, playsinline: 1, rel: 0, enablejsapi: 1, origin: location.origin }, events: { onReady: onYouTubeReady, onStateChange: syncFromPlayer } });
   } else if (currentVideoId !== id) {
     currentVideoId = id;
     withIgnoredPlayerEvents(() => {
