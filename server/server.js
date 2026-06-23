@@ -91,7 +91,7 @@ io.on("connection", (socket) => {
   socket.on("playback", (playback) => {
     const requestedItem = typeof playback.itemId === "string" ? playback.itemId : room.playback.itemId;
     room.playback = {
-      itemId: requestedItem,
+      itemId: room.playlist.some((item) => item.id === requestedItem) ? requestedItem : room.playback.itemId,
       playing: Boolean(playback.playing),
       time: Number.isFinite(playback.time) ? Math.max(0, Number(playback.time)) : room.playback.time,
       updatedAt: Date.now(),

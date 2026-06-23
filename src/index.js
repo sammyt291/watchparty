@@ -64,7 +64,7 @@ function renderRoom(id) {
     if (!isPlaybackGateVisible()) beginSync();
   });
   socket.on("playlist", (next) => { pendingLocalPlaylist = false; playlist = next; paintQueue(); loadCurrent(); });
-  socket.on("playback", (next) => { const changed = next.itemId !== playback.itemId; playback = localPlayback(next); updatePlaybackGate(); beginSync(); if (changed) loadCurrent(); else applyPlayback(true); });
+  socket.on("playback", (next) => { const wasPlaying = playback.playing; const changed = next.itemId !== playback.itemId; playback = localPlayback(next); updatePlaybackGate(); beginSync(); if (changed) loadCurrent(); else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing }); });
   socket.on("users", (next) => { users = next; paintUsers(); });
   socket.on("serverPong", () => {
     const ping = Date.now() - pingStart;
@@ -184,13 +184,13 @@ function onYouTubeReady() {
   setPlayerVolume();
   applyPlayback();
 }
-function applyPlayback(fineAdjust = false) {
+function applyPlayback(fineAdjust = false, options = {}) {
   byId("playPause").textContent = playback.playing ? "Pause" : "Play";
   if (!ytReady || !isYouTubePlayer()) return;
 
   const t = targetPlaybackTime();
   withIgnoredPlayerEvents(() => {
-    if (hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
+    if (!options.skipSeek && hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
     if ((!playback.playing || !playbackUnlocked) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
     if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) ytPlayer.playVideo();
   });
