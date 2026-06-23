@@ -224,7 +224,7 @@ function togglePlay() { playbackUnlocked = true; updatePlaybackGate(); emitPlayb
 function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
 function changeVolume() { playerVolume = Number(byId("volume").value); localStorage.setItem(VOLUME_STORAGE_KEY, String(playerVolume)); setPlayerVolume(); }
 function setPlayerVolume() { if (hasYtMethod("setVolume")) ytPlayer.setVolume(playerVolume); }
-setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); }, 500);
+setInterval(updateLocalPlaybackTelemetry, 500);
 function emitPlaylist() { pendingLocalPlaylist = true; socket?.emit("playlist", playlist); paintQueue(); loadCurrent(); }
 function emitPlayback(playing = playback.playing, time = getYtTime() || playback.time, itemId = playback.itemId) { setSyncStatus("Pending"); socket?.emit("playback", { itemId, playing, time }); }
 function playPlaylistItem(itemId) { if (!itemId || itemId === playback.itemId) return; playbackUnlocked = true; updatePlaybackGate(); emitPlayback(true, 0, itemId); }
@@ -312,6 +312,29 @@ function isYouTubePlayer() { return ytPlayer && typeof ytPlayer === "object" && 
 function hasYtMethod(method) { return typeof ytPlayer?.[method] === "function"; }
 function getYtDuration() { return hasYtMethod("getDuration") ? ytPlayer.getDuration() || 0 : 0; }
 function getYtTime() { return hasYtMethod("getCurrentTime") ? ytPlayer.getCurrentTime() || 0 : 0; }
+function updateLocalPlaybackTelemetry() {
+  const d = getYtDuration();
+  if (d) byId("seek").value = String((getYtTime() / d) * 1000);
+  const time = currentPlaybackTime();
+  const offset = currentSyncOffset();
+  const own = users.find((u) => u.id === socket?.id);
+  if (own) {
+    own.seekTime = time;
+    own.seekOffset = offset;
+    paintUsers();
+  }
+  socket?.emit("seekTelemetry", { time, offset });
+}
+function currentPlaybackTime() {
+  if (!playback.itemId) return null;
+  if (isYouTubePlayer() && ytReady) return getYtTime();
+  return playback.time;
+}
+function currentSyncOffset() {
+  const time = currentPlaybackTime();
+  if (!Number.isFinite(time) || !playback.itemId) return null;
+  return time - targetPlaybackTime();
+}
 function formatSeekOffsetMs(offset) {
   const seconds = Number(offset);
   if (!Number.isFinite(seconds)) return "—ms";
