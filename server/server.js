@@ -13,11 +13,10 @@ const rooms = new Map();
 const SYNC_CHECK_INTERVAL_MS = 1000;
 const SYNC_TARGET_TOLERANCE_MS = 50;
 const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 5;
-const SYNC_ADJUSTMENT_PID_KP = 1.25;
-const SYNC_ADJUSTMENT_PID_KI = 0.2;
-const SYNC_ADJUSTMENT_PID_KD = 0.35;
-const SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS = 1.5;
-const SYNC_ADJUSTMENT_MIN_SEEK_MS = 80;
+const SYNC_ADJUSTMENT_GAIN = 0.85;
+const SYNC_ADJUSTMENT_WORSENING_GAIN = 0.45;
+const SYNC_ADJUSTMENT_SIGN_FLIP_GAIN = 0.6;
+const SYNC_ADJUSTMENT_MAX_STEP_SECONDS = 2;
 const SYNC_LATENCY_UNCERTAINTY_FACTOR = 1;
 app.use(cors());
 app.use(express.json());
@@ -123,6 +122,7 @@ io.on("connection", (socket) => {
       room.adjustmentAttempt = 0;
       room.syncCheckInProgress = false;
       room.syncAnchorUserId = socket.id;
+      room.syncReferenceUserId = socket.id;
       for (const user of room.users.values()) {
         user.syncSettled = false;
         user.adjustedCycle = null;
@@ -144,6 +144,7 @@ io.on("connection", (socket) => {
     if (!nextPlaying && room.playback.itemId) {
       room.syncCheckInProgress = false;
       room.syncAnchorUserId = null;
+      room.syncReferenceUserId = null;
       markRoomPausedInSync(room);
       broadcastUsers(roomId);
     }
@@ -155,6 +156,7 @@ io.on("connection", (socket) => {
     if (room.users.size === 0) rooms.delete(roomId);
     else {
       if (room.syncAnchorUserId === socket.id) room.syncAnchorUserId = null;
+      if (room.syncReferenceUserId === socket.id) room.syncReferenceUserId = null;
       broadcastUsers(roomId);
     }
     logRooms();
@@ -168,7 +170,7 @@ setInterval(checkRoomSync, SYNC_CHECK_INTERVAL_MS);
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
-    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false, syncAnchorUserId: null };
+    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false, syncAnchorUserId: null, syncReferenceUserId: null };
     rooms.set(id, room);
   }
   return room;
@@ -249,6 +251,7 @@ function checkRoomSync() {
       user.adjustedAttempt = 0;
       user.syncHistory = null;
     }
+    room.syncReferenceUserId = room.syncAnchorUserId;
     io.to(roomId).emit("syncCheck", { itemId: room.playback.itemId, cycle: room.adjustmentCycle, attempt: room.adjustmentAttempt });
     setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.adjustmentAttempt, room.playback.itemId), 750);
   }
@@ -285,7 +288,7 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     user.adjustedCycle = cycle;
     user.adjustedAttempt = attempt + 1;
     adjusted = true;
-    const requestedSeekDelta = computePidSyncAdjustment(user, seekDelta);
+    const requestedSeekDelta = computeSyncAdjustment(user, seekDelta);
     if (measurement) measurement.nextRequestedSeekDelta = requestedSeekDelta;
     io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, seekDelta: requestedSeekDelta, skipAhead: Math.max(0, requestedSeekDelta) });
   }
@@ -317,13 +320,24 @@ function syncToleranceSecondsForUser(user) {
   return secondsFromMs(SYNC_TARGET_TOLERANCE_MS + latencyUncertaintyMs);
 }
 function syncTargetTime(room, positions) {
+  const existingReference = positions.find(({ user }) => user.id === room.syncReferenceUserId);
+  if (existingReference) return existingReference.currentTime;
+
   const anchorPosition = positions.find(({ user }) => user.id === room.syncAnchorUserId && user.syncSettled && user.syncStatus === "Sync");
-  if (anchorPosition) return anchorPosition.currentTime;
+  if (anchorPosition) {
+    room.syncReferenceUserId = anchorPosition.user.id;
+    return anchorPosition.currentTime;
+  }
 
-  const settledPositions = positions.filter(({ user }) => user.syncSettled && user.syncStatus === "Sync");
-  if (settledPositions.length > 0) return settledPositions.reduce((sum, entry) => sum + entry.currentTime, 0) / settledPositions.length;
+  const settledPosition = positions.find(({ user }) => user.syncSettled && user.syncStatus === "Sync");
+  if (settledPosition) {
+    room.syncReferenceUserId = settledPosition.user.id;
+    return settledPosition.currentTime;
+  }
 
-  return Math.max(...positions.map((entry) => entry.currentTime));
+  const leadingPosition = positions.reduce((leader, entry) => (entry.currentTime > leader.currentTime ? entry : leader), positions[0]);
+  room.syncReferenceUserId = leadingPosition.user.id;
+  return leadingPosition.currentTime;
 }
 function recordSyncMeasurement(user, cycle, attempt, offset) {
   if (!user.syncHistory || user.syncHistory.cycle !== cycle) {
@@ -331,37 +345,38 @@ function recordSyncMeasurement(user, cycle, attempt, offset) {
   }
 
   const previousMeasurement = user.syncHistory.measurements[user.syncHistory.measurements.length - 1];
-  const lag = -offset;
-  const previousLag = Number.isFinite(previousMeasurement?.lag) ? previousMeasurement.lag : null;
-  const previousIntegral = Number.isFinite(previousMeasurement?.integral) ? previousMeasurement.integral : 0;
   const measurement = {
     attempt,
     offset,
-    lag,
     previousOffset: previousMeasurement?.offset ?? null,
-    integral: clamp(previousIntegral + lag, -SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS, SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS),
-    derivative: Number.isFinite(previousLag) ? lag - previousLag : 0,
   };
   user.syncHistory.measurements.push(measurement);
   user.syncHistory.measurements = user.syncHistory.measurements.slice(-MAX_SYNC_ADJUSTMENT_ATTEMPTS - 1);
   return measurement;
 }
-function computePidSyncAdjustment(user, targetSeekDelta) {
+function computeSyncAdjustment(user, targetSeekDelta) {
   const measurements = user.syncHistory?.measurements || [];
   const measurement = measurements[measurements.length - 1];
-  if (!measurement) return targetSeekDelta;
+  if (!measurement || !Number.isFinite(targetSeekDelta)) return targetSeekDelta;
 
-  const proportional = SYNC_ADJUSTMENT_PID_KP * targetSeekDelta;
-  const integral = SYNC_ADJUSTMENT_PID_KI * measurement.integral;
-  const derivative = SYNC_ADJUSTMENT_PID_KD * measurement.derivative;
-  const requestedSeekDelta = proportional + integral + derivative;
-  const minSeekDelta = Math.sign(targetSeekDelta) * Math.min(Math.abs(targetSeekDelta), secondsFromMs(SYNC_ADJUSTMENT_MIN_SEEK_MS));
+  const previousOffset = Number.isFinite(measurement.previousOffset) ? measurement.previousOffset : null;
+  const currentOffset = measurement.offset;
+  const absTarget = Math.abs(targetSeekDelta);
+  let gain = SYNC_ADJUSTMENT_GAIN;
 
-  measurement.pid = { proportional, integral, derivative };
-  if (!Number.isFinite(requestedSeekDelta)) return targetSeekDelta;
-  return targetSeekDelta > 0
-    ? clamp(requestedSeekDelta, minSeekDelta, targetSeekDelta)
-    : clamp(requestedSeekDelta, targetSeekDelta, minSeekDelta);
+  if (previousOffset != null) {
+    const signFlipped = Math.sign(previousOffset) !== Math.sign(currentOffset);
+    const gotWorse = Math.abs(currentOffset) > Math.abs(previousOffset);
+    if (signFlipped) gain = Math.min(gain, SYNC_ADJUSTMENT_SIGN_FLIP_GAIN);
+    if (gotWorse) gain = Math.min(gain, SYNC_ADJUSTMENT_WORSENING_GAIN);
+  }
+
+  const maxGain = absTarget < 0.25 ? 0.85 : 1;
+  const effectiveGain = clamp(gain, 0, maxGain);
+  const maxStep = Math.min(absTarget, SYNC_ADJUSTMENT_MAX_STEP_SECONDS);
+  const requestedSeekDelta = Math.sign(targetSeekDelta) * Math.min(maxStep, absTarget * effectiveGain);
+  measurement.adjustment = { gain: effectiveGain, configuredGain: gain, requestedSeekDelta };
+  return requestedSeekDelta;
 }
 function roomUsersAreSyncSettled(room) {
   return [...room.users.values()].every((user) => user.syncSettled);
