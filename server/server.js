@@ -10,14 +10,10 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
-const SYNC_CHECK_INTERVAL_MS = 5000;
-const SYNC_CHECK_RESPONSE_MS = 750;
+const SYNC_CHECK_INTERVAL_MS = 1000;
 const SYNC_TARGET_TOLERANCE_MS = 50;
-const SYNC_RECHECK_DELAY_MS = 900;
 const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 5;
 const SYNC_ADJUSTMENT_INITIAL_STEP_MS = 50;
-const SYNC_ADJUSTMENT_SCALE_STEP_MS = 100;
-const SYNC_DIRECT_ADJUSTMENT_MAX_MS = 2000;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -222,7 +218,7 @@ function checkRoomSync() {
       user.lastRequestedSkipAhead = null;
     }
     io.to(roomId).emit("syncCheck", { itemId: room.playback.itemId, cycle: room.adjustmentCycle, attempt: room.adjustmentAttempt });
-    setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.adjustmentAttempt, room.playback.itemId), SYNC_CHECK_RESPONSE_MS);
+    setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.adjustmentAttempt, room.playback.itemId), 750);
   }
 }
 function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
@@ -252,9 +248,8 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     user.adjustedCycle = cycle;
     user.adjustedAttempt = attempt + 1;
     adjusted = true;
-    const stepAmount = secondsFromMs(SYNC_ADJUSTMENT_INITIAL_STEP_MS + (SYNC_ADJUSTMENT_SCALE_STEP_MS * attempt));
     const directSkipAhead = computeDirectSyncAdjustment(user, skipAhead);
-    const requestedSkipAhead = directSkipAhead ?? skipAhead + stepAmount;
+    const requestedSkipAhead = directSkipAhead ?? skipAhead + secondsFromMs(SYNC_ADJUSTMENT_INITIAL_STEP_MS);
     user.lastRequestedSkipAhead = requestedSkipAhead;
     if (measurement) measurement.nextRequestedSkipAhead = requestedSkipAhead;
     io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, skipAhead: requestedSkipAhead });
@@ -269,8 +264,8 @@ function recheckRoomSync(roomId, cycle, attempt, itemId) {
     room.adjustmentAttempt = attempt;
     const startedAt = Date.now();
     io.to(roomId).emit("syncCheck", { itemId, cycle, attempt });
-    setTimeout(() => adjustRoomSync(roomId, startedAt, cycle, attempt, itemId), SYNC_CHECK_RESPONSE_MS);
-  }, SYNC_RECHECK_DELAY_MS);
+    setTimeout(() => adjustRoomSync(roomId, startedAt, cycle, attempt, itemId), 750);
+  }, 900);
 }
 
 function secondsFromMs(ms) { return ms / 1000; }
@@ -304,10 +299,9 @@ function computeDirectSyncAdjustment(user, currentLag) {
   if (!Number.isFinite(responseRatio) || responseRatio <= 0) return null;
 
   const directSkipAhead = currentLag / responseRatio;
-  if (!Number.isFinite(directSkipAhead) || directSkipAhead <= secondsFromMs(SYNC_TARGET_TOLERANCE_MS)) return null;
-  return clamp(directSkipAhead, secondsFromMs(SYNC_TARGET_TOLERANCE_MS), secondsFromMs(SYNC_DIRECT_ADJUSTMENT_MAX_MS));
+  if (!Number.isFinite(directSkipAhead) || directSkipAhead <= 0) return null;
+  return directSkipAhead;
 }
-function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
 function adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) {
   const position = user.position;
   if (!position || position.cycle !== cycle || position.attempt !== attempt || position.itemId !== itemId || !Number.isFinite(position.time)) return NaN;
