@@ -110,7 +110,6 @@ io.on("connection", (socket) => {
 server.listen(config.PORT, config.HOST, () => {
   console.log(`WatchParty listening on http://${config.HOST}:${config.PORT}`);
 });
-
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
@@ -127,12 +126,14 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
   clearPlaybackTimers(room);
   const usersByPing = [...room.users.values()].sort((a, b) => (b.ping || 0) - (a.ping || 0));
   const maxPing = usersByPing[0]?.ping || 0;
-  const playLeadMs = basePlayback.playing ? Math.min(PLAY_START_DELAY_MS, maxPing * 2) : 0;
+  // `ping` is a full round trip, so schedule start using a one-way latency estimate.
+  const playLeadMs = basePlayback.playing ? Math.min(PLAY_START_DELAY_MS, maxPing) : 0;
   const scheduleStartedAt = Date.now();
 
   for (const user of usersByPing) {
     const userPing = user.ping || 0;
-    const startDelayMs = basePlayback.playing ? Math.max(0, playLeadMs - userPing) : 0;
+    const oneWayLatencyMs = userPing / 2;
+    const startDelayMs = basePlayback.playing ? Math.max(0, playLeadMs - oneWayLatencyMs) : 0;
     const targetStartAt = basePlayback.playing ? scheduleStartedAt + startDelayMs : null;
     const emitPlayback = () => {
       if (!rooms.get(roomId)?.users.has(user.id)) return;
@@ -151,6 +152,7 @@ function playbackForUser(room, socketId, basePlayback = room.playback, originId 
     ...basePlayback,
     originId,
     startDelayMs: targetStartAt == null ? 0 : Math.max(0, targetStartAt - now),
+    targetStartAt,
     startTime,
     time: startTime ?? Math.max(0, basePlayback.time + fallbackElapsed),
     updatedAt: now,
