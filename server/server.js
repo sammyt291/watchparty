@@ -127,7 +127,7 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
   clearPlaybackTimers(room);
   const usersByPing = [...room.users.values()].sort((a, b) => (b.ping || 0) - (a.ping || 0));
   const maxPing = usersByPing[0]?.ping || 0;
-  const playLeadMs = basePlayback.playing ? Math.min(PLAY_START_DELAY_MS, maxPing) : 0;
+  const playLeadMs = basePlayback.playing ? Math.min(PLAY_START_DELAY_MS, maxPing * 2) : 0;
   const scheduleStartedAt = Date.now();
 
   for (const user of usersByPing) {
