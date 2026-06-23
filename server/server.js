@@ -3,7 +3,6 @@ const path = require("node:path");
 const express = require("express");
 const cors = require("cors");
 const http = require("node:http");
-const dgram = require("node:dgram");
 const { Server } = require("socket.io");
 const config = require("./config.js");
 
@@ -14,10 +13,6 @@ const rooms = new Map();
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
-app.get("/api/ntp-time", async (_req, res) => {
-  if (!ntpUpdatedAt || Date.now() - ntpUpdatedAt > NTP_POLL_INTERVAL_MS) await refreshNtpOffset();
-  res.json({ now: ntpNow(), offset: ntpOffsetMs, syncedAt: ntpUpdatedAt, host: NTP_HOST });
-});
 app.get("/api/metadata", async (req, res) => {
   const url = String(req.query.url || "");
   res.json(await getMetadata(url));
@@ -131,31 +126,24 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
   clearPlaybackTimers(room);
   const usersByPing = [...room.users.values()].sort((a, b) => (b.ping || 0) - (a.ping || 0));
   const maxOneWayPing = usersByPing[0]?.ping || 0;
-  const playLeadMs = basePlayback.playing ? maxOneWayPing : 0;
-  const scheduledStartAt = basePlayback.playing ? Date.now() + playLeadMs : null;
-  if (scheduledStartAt != null) basePlayback.updatedAt = scheduledStartAt;
+  if (basePlayback.playing) basePlayback.updatedAt = Date.now() + maxOneWayPing;
 
   for (const user of usersByPing) {
+    if (!rooms.get(roomId)?.users.has(user.id)) continue;
     const userOneWayPing = user.ping || 0;
-    const emitDelayMs = basePlayback.playing ? Math.max(0, playLeadMs - userOneWayPing) : 0;
-    const emitPlayback = () => {
-      if (!rooms.get(roomId)?.users.has(user.id)) return;
-      io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId));
-    };
-
-    if (emitDelayMs > 0) room.playbackTimers.push(setTimeout(emitPlayback, emitDelayMs));
-    else emitPlayback();
+    const startDelayMs = basePlayback.playing ? Math.max(0, maxOneWayPing - userOneWayPing) : 0;
+    io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, startDelayMs, true));
   }
 }
-function playbackForUser(room, socketId, basePlayback = room.playback, originId = null) {
+function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, startDelayMs = 0, isScheduledPlayback = false) {
   const user = room.users.get(socketId);
   const now = Date.now();
-  const fallbackElapsed = basePlayback.playing ? Math.max(0, now - basePlayback.updatedAt + (user?.ping || 0)) / 1000 : 0;
+  const elapsedMs = basePlayback.playing && !isScheduledPlayback ? Math.max(0, now - basePlayback.updatedAt + (user?.ping || 0)) : 0;
   return {
     ...basePlayback,
     originId,
-    startDelayMs: 0,
-    time: Math.max(0, basePlayback.time + fallbackElapsed),
+    startDelayMs,
+    time: Math.max(0, basePlayback.time + elapsedMs / 1000),
     updatedAt: now,
   };
 }
