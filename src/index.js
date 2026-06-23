@@ -16,6 +16,8 @@ let pingSamples = [];
 let playbackUnlocked = false;
 let syncStatus = "Pending";
 let syncTimer = null;
+let startCatchupTimer = null;
+let startCatchupPending = false;
 
 if (!roomId) renderSplash(); else renderRoom(roomId);
 
@@ -33,16 +35,16 @@ function renderRoom(id) {
   }
   app.innerHTML = `<main class="room"><section class="stage"><div id="video" class="video"><div class="empty">Add a YouTube or Facebook video URL</div></div><div class="controls"><button id="playPause">Play</button><input id="seek" type="range" min="0" max="1000" value="0"/></div><div id="users" class="users"></div></section><aside class="playlist"><h2>Room ${escapeHtml(id)}</h2><input id="urlInput" placeholder="Paste URL and press Enter"/><div id="queue"></div></aside></main><div id="playbackGate" class="playback-gate" role="dialog" aria-modal="true" aria-labelledby="playbackGateTitle"><div class="playback-gate__panel"><h2 id="playbackGateTitle">Enable playback</h2><p>Your browser needs a click before shared room media can play.</p><button id="enablePlayback" class="primary">Enable</button></div></div>`;
   socket = io(serverHost, { query: { roomId: id, name } });
-  socket.on("state", (state) => { playlist = state.playlist; playback = localPlayback(state.playback); users = state.users; setSyncStatus("Joining"); paintAll(); updatePlaybackGate(); });
+  socket.on("state", (state) => { playlist = state.playlist; playback = localPlayback(state.playback); users = state.users; setSyncStatus("Joining"); paintAll(); updatePlaybackGate(); if (!isPlaybackGateVisible()) beginSync(); });
   socket.on("playlist", (next) => { playlist = next; paintQueue(); loadCurrent(); });
-  socket.on("playback", (next) => { const changed = next.itemId !== playback.itemId; playback = localPlayback(next); setSyncStatus("Syncing"); updatePlaybackGate(); if (changed) loadCurrent(); else applyPlayback(true); scheduleSyncedStatus(); });
+  socket.on("playback", (next) => { const changed = next.itemId !== playback.itemId; playback = localPlayback(next); updatePlaybackGate(); beginSync(); if (changed) loadCurrent(); else applyPlayback(true); });
   socket.on("users", (next) => { users = next; paintUsers(); });
   socket.on("serverPong", () => {
     const ping = Date.now() - pingStart;
     pingSamples.push(ping);
     pingSamples = pingSamples.slice(-10);
     socket?.emit("pongMs", ping);
-    if (syncStatus === "Syncing" && pingSamples.length >= 3) applyFineSyncAdjustment();
+    if (syncStatus === "Syncing" && pingSamples.length >= 3 && !isPlaybackGateVisible() && !isCurrentPlaybackOwner()) applyFineSyncAdjustment();
   });
   setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 500);
   byId("playPause").onclick = togglePlay;
@@ -101,8 +103,8 @@ function loadYoutube(url) {
   } else if (currentVideoId !== id) {
     currentVideoId = id;
     withIgnoredPlayerEvents(() => {
-      if (hasYtMethod("loadVideoById")) ytPlayer.loadVideoById(id, playback.time || 0);
-      else if (hasYtMethod("cueVideoById")) ytPlayer.cueVideoById(id, playback.time || 0);
+      if (playback.playing && playbackUnlocked && hasYtMethod("loadVideoById")) ytPlayer.loadVideoById(id, targetPlaybackTime());
+      else if (hasYtMethod("cueVideoById")) ytPlayer.cueVideoById(id, targetPlaybackTime());
     });
     setTimeout(applyPlayback, 250);
   } else {
@@ -118,15 +120,16 @@ function applyPlayback(fineAdjust = false) {
   byId("playPause").textContent = playback.playing ? "Pause" : "Play";
   if (!ytReady || !isYouTubePlayer()) return;
 
-  const t = playback.playing ? playback.time + (Date.now() - playback.updatedAt) / 1000 : playback.time;
+  const t = targetPlaybackTime();
   withIgnoredPlayerEvents(() => {
     if (hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
-    if (!playback.playing && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
-    if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) ytPlayer.playVideo();
+    if ((!playback.playing || !playbackUnlocked) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
+    if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) { startCatchupPending = shouldCatchupOnStart(); ytPlayer.playVideo(); }
   });
 }
 function syncFromPlayer(e) {
   sizeYouTubeIframe();
+  if (e.data === window.YT?.PlayerState.PLAYING && startCatchupPending) scheduleStartCatchup();
   if (ignorePlayerEvents) return;
   if (e.data === window.YT?.PlayerState.ENDED) emitPlayback(false, 0);
 }
@@ -144,12 +147,31 @@ function emitPlayback(playing = playback.playing, time = getYtTime() || playback
 function playPlaylistItem(itemId) { if (!itemId || itemId === playback.itemId) return; unlockPlayback(); emitPlayback(true, 0, itemId); }
 function reorder(event, targetId) { event.preventDefault(); event.stopPropagation(); const id = event.dataTransfer?.getData("text/plain"); if (!id || id === targetId) return; const dragged = playlist.find((i) => i.id === id); playlist = playlist.filter((i) => i.id !== id); playlist.splice(playlist.findIndex((i) => i.id === targetId), 0, dragged); emitPlaylist(); }
 function editName() { const next = prompt("Edit your display name", localStorage.getItem("watchparty:name") || ""); if (next) { localStorage.setItem("watchparty:name", next); socket?.emit("setName", next); } }
-function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); applyPlayback(); }
-function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", playbackUnlocked || (!playback.playing && !playback.itemId)); }
+function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); beginSync(); applyPlayback(true); }
+function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", !isPlaybackGateVisible()); }
+function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing && Boolean(playback.itemId); }
 function localPlayback(next) { return { ...next, updatedAt: Date.now() }; }
 function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length : 0; }
+function targetPlaybackTime() { return playback.playing ? playback.time + (Date.now() - playback.updatedAt + avgPing() / 2) / 1000 : playback.time; }
+function isCurrentPlaybackOwner() { return Boolean(playback.originId && playback.originId === socket?.id); }
+function shouldCatchupOnStart() { return playback.playing && playbackUnlocked && !isCurrentPlaybackOwner(); }
+function beginSync() {
+  clearTimeout(syncTimer);
+  if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
+  setSyncStatus("Syncing");
+  scheduleSyncedStatus();
+}
 function applyFineSyncAdjustment() { applyPlayback(true); scheduleSyncedStatus(); }
-function scheduleSyncedStatus() { clearTimeout(syncTimer); syncTimer = setTimeout(() => setSyncStatus("Sync"), 700 + avgPing()); }
+function scheduleStartCatchup() {
+  startCatchupPending = false;
+  clearTimeout(startCatchupTimer);
+  startCatchupTimer = setTimeout(() => applyFineSyncAdjustment(), Math.min(4000, Math.max(2500, avgPing() * 2)));
+}
+function scheduleSyncedStatus() {
+  clearTimeout(syncTimer);
+  if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
+  syncTimer = setTimeout(() => setSyncStatus("Sync"), 700 + avgPing());
+}
 function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); }
 function withIgnoredPlayerEvents(callback) { ignorePlayerEvents = true; callback(); setTimeout(() => { ignorePlayerEvents = false; }, 1000); }
 function isYouTubePlayer() { return ytPlayer && typeof ytPlayer === "object" && hasYtMethod("getIframe"); }
