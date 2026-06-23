@@ -12,8 +12,11 @@ const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] }
 const rooms = new Map();
 const SYNC_CHECK_INTERVAL_MS = 5000;
 const SYNC_CHECK_RESPONSE_MS = 750;
-const SYNC_ADJUST_THRESHOLD_SECONDS = 0.01;
-const YOUTUBE_SEEK_BUFFER_SECONDS = 0.075;
+const SYNC_TARGET_TOLERANCE_SECONDS = 0.05;
+const SYNC_RECHECK_DELAY_MS = 900;
+const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 2;
+const YOUTUBE_SEEK_BUFFER_SECONDS = 0.02;
+const YOUTUBE_SEEK_RETRY_BUFFER_SECONDS = 0.05;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -42,7 +45,7 @@ io.on("connection", (socket) => {
   const room = getRoom(roomId);
   const ip = getIp(socket.handshake.address);
   const name = safeName(String(socket.handshake.query.name || ""));
-  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, adjustedCycle: null });
+  room.users.set(socket.id, { id: socket.id, name, ip, ping: null, pings: [], syncStatus: "Joining", seekTime: null, seekOffset: null, adjustedCycle: null, adjustedAttempt: 0 });
   socket.join(roomId);
   socket.emit("state", serializeForSocket(room, socket.id));
   broadcastUsers(roomId);
@@ -84,6 +87,7 @@ io.on("connection", (socket) => {
       time: user.seekTime,
       receivedAt: Date.now(),
       cycle: Number.isInteger(position?.cycle) ? position.cycle : room.adjustmentCycle,
+      attempt: Number.isInteger(position?.attempt) ? position.attempt : room.adjustmentAttempt,
     };
     broadcastUsers(roomId);
   });
@@ -114,7 +118,12 @@ io.on("connection", (socket) => {
     const startsPlaybackCycle = nextPlaying && (!room.playback.playing || nextItemId !== room.playback.itemId);
     if (startsPlaybackCycle) {
       room.adjustmentCycle += 1;
-      for (const user of room.users.values()) user.adjustedCycle = null;
+      room.adjustmentAttempt = 0;
+      for (const user of room.users.values()) {
+        user.adjustedCycle = null;
+        user.adjustedAttempt = 0;
+        user.seekOffset = null;
+      }
     }
     room.playback = {
       itemId: nextItemId,
@@ -140,13 +149,13 @@ setInterval(checkRoomSync, SYNC_CHECK_INTERVAL_MS);
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
-    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0 };
+    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0 };
     rooms.set(id, room);
   }
   return room;
 }
 function serializeForSocket(room, socketId) { return { playlist: room.playlist, playback: playbackForUser(room, socketId), users: publicUsers(room) }; }
-function publicUsers(room) { return [...room.users.values()].map(({ id, name, ip, ping, syncStatus, seekTime }) => ({ id, name, ip, ping, syncStatus, seekTime })); }
+function publicUsers(room) { return [...room.users.values()].map(({ id, name, ip, ping, syncStatus, seekTime, seekOffset }) => ({ id, name, ip, ping, syncStatus, seekTime, seekOffset })); }
 function broadcastUsers(roomId) { const room = rooms.get(roomId); if (room) io.to(roomId).emit("users", publicUsers(room)); }
 function broadcastPlaylist(roomId, room) { io.to(roomId).emit("playlist", room.playlist); }
 function schedulePlayback(roomId, room, basePlayback, originId = null) {
@@ -182,29 +191,48 @@ function checkRoomSync() {
   const startedAt = Date.now();
   for (const [roomId, room] of rooms) {
     if (!room.playback.playing || !room.playback.itemId || room.users.size < 2) continue;
-    io.to(roomId).emit("syncCheck", { itemId: room.playback.itemId, cycle: room.adjustmentCycle });
-    setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.playback.itemId), SYNC_CHECK_RESPONSE_MS);
+    room.adjustmentAttempt = 0;
+    io.to(roomId).emit("syncCheck", { itemId: room.playback.itemId, cycle: room.adjustmentCycle, attempt: room.adjustmentAttempt });
+    setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.adjustmentAttempt, room.playback.itemId), SYNC_CHECK_RESPONSE_MS);
   }
 }
-function adjustRoomSync(roomId, checkStartedAt, cycle, itemId) {
+function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
   const room = rooms.get(roomId);
-  if (!room || !room.playback.playing || room.playback.itemId !== itemId || room.adjustmentCycle !== cycle) return;
+  if (!room || !room.playback.playing || room.playback.itemId !== itemId || room.adjustmentCycle !== cycle || room.adjustmentAttempt !== attempt) return;
   const positions = [...room.users.values()]
-    .map((user) => ({ user, position: user.position, currentTime: adjustedPositionTime(user, checkStartedAt, cycle, itemId) }))
+    .map((user) => ({ user, position: user.position, currentTime: adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) }))
     .filter((entry) => Number.isFinite(entry.currentTime));
   if (positions.length < 2) return;
   const furthestTime = Math.max(...positions.map((entry) => entry.currentTime));
+  let adjusted = false;
   for (const { user, currentTime } of positions) {
-    if (user.adjustedCycle === cycle) continue;
-    const skipAhead = furthestTime - currentTime;
-    if (skipAhead <= SYNC_ADJUST_THRESHOLD_SECONDS) continue;
+    const offset = currentTime - furthestTime;
+    user.seekOffset = offset;
+    const skipAhead = -offset;
+    if (skipAhead <= SYNC_TARGET_TOLERANCE_SECONDS || (user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1)) continue;
     user.adjustedCycle = cycle;
-    io.to(user.id).emit("syncAdjustment", { itemId, cycle, skipAhead: skipAhead + YOUTUBE_SEEK_BUFFER_SECONDS });
+    user.adjustedAttempt = attempt + 1;
+    adjusted = true;
+    const retryBuffer = attempt > 0 ? YOUTUBE_SEEK_RETRY_BUFFER_SECONDS : YOUTUBE_SEEK_BUFFER_SECONDS;
+    io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, skipAhead: skipAhead + retryBuffer });
   }
+  broadcastUsers(roomId);
+  if (adjusted && attempt + 1 < MAX_SYNC_ADJUSTMENT_ATTEMPTS) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
 }
-function adjustedPositionTime(user, checkStartedAt, cycle, itemId) {
+function recheckRoomSync(roomId, cycle, attempt, itemId) {
+  setTimeout(() => {
+    const room = rooms.get(roomId);
+    if (!room || !room.playback.playing || room.playback.itemId !== itemId || room.adjustmentCycle !== cycle) return;
+    room.adjustmentAttempt = attempt;
+    const startedAt = Date.now();
+    io.to(roomId).emit("syncCheck", { itemId, cycle, attempt });
+    setTimeout(() => adjustRoomSync(roomId, startedAt, cycle, attempt, itemId), SYNC_CHECK_RESPONSE_MS);
+  }, SYNC_RECHECK_DELAY_MS);
+}
+
+function adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) {
   const position = user.position;
-  if (!position || position.cycle !== cycle || position.itemId !== itemId || !Number.isFinite(position.time)) return NaN;
+  if (!position || position.cycle !== cycle || position.attempt !== attempt || position.itemId !== itemId || !Number.isFinite(position.time)) return NaN;
   if (position.receivedAt < checkStartedAt) return NaN;
   const receiveDelaySeconds = (user.ping || 0) / 1000;
   const elapsedSinceReceiveSeconds = position.playing ? Math.max(0, Date.now() - position.receivedAt) / 1000 : 0;
