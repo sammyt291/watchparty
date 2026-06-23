@@ -23,7 +23,7 @@ npm install
 npm run dev
 ```
 
-The server defaults to `http://localhost:8080` and serves the plain static client from `public/`.
+The server defaults to `http://localhost:8080` and serves the plain static client directly.
 
 ## Run without watch mode
 
@@ -39,4 +39,4 @@ Environment variables are optional:
 
 - `HOST` — server bind host, default `0.0.0.0`.
 - `PORT` — server port, default `8080`.
-- `PUBLIC_DIRECTORY` — static client directory, default `public`.
+- `CLIENT_DIRECTORY` — directory containing `index.html` and `src/`, default current project root.

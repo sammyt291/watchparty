@@ -11,5 +11,5 @@ try {
 module.exports = {
   HOST: process.env.HOST || "0.0.0.0",
   PORT: Number(process.env.PORT || 8080),
-  PUBLIC_DIRECTORY: process.env.PUBLIC_DIRECTORY || "public",
+  CLIENT_DIRECTORY: process.env.CLIENT_DIRECTORY || ".",
 };

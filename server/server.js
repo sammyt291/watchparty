@@ -19,13 +19,13 @@ app.get("/api/metadata", async (req, res) => {
   res.json(await getMetadata(url));
 });
 
-const publicPath = path.resolve(__dirname, "..", config.PUBLIC_DIRECTORY);
-const indexPath = path.join(publicPath, "index.html");
+const clientPath = path.resolve(__dirname, "..", config.CLIENT_DIRECTORY);
+const indexPath = path.join(clientPath, "index.html");
 
-app.use(express.static(publicPath));
+app.use("/src", express.static(path.join(clientPath, "src")));
 app.get(/.*/, (_req, res) => {
   if (!fs.existsSync(indexPath)) {
-    res.status(503).send(`Client files not found at ${indexPath}.`);
+    res.status(503).send(`Client file not found at ${indexPath}.`);
     return;
   }
 
