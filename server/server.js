@@ -199,6 +199,7 @@ function clearPlaybackTimers(room) {
   for (const timer of room.playbackTimers || []) clearTimeout(timer);
   room.playbackTimers = [];
 }
+function secondsFromMs(milliseconds) { return milliseconds / 1000; }
 function logRooms() {
   console.clear();
   console.log("Rooms");
