@@ -122,6 +122,7 @@ io.on("connection", (socket) => {
       room.adjustmentCycle += 1;
       room.adjustmentAttempt = 0;
       room.syncCheckInProgress = false;
+      room.syncSettled = false;
       for (const user of room.users.values()) {
         user.adjustedCycle = null;
         user.adjustedAttempt = 0;
@@ -158,7 +159,7 @@ setInterval(checkRoomSync, SYNC_CHECK_INTERVAL_MS);
 function getRoom(id) {
   let room = rooms.get(id);
   if (!room) {
-    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false };
+    room = { playlist: [], playback: { itemId: null, playing: false, time: 0, updatedAt: Date.now() }, users: new Map(), playbackTimers: [], adjustmentCycle: 0, adjustmentAttempt: 0, syncCheckInProgress: false, syncSettled: false };
     rooms.set(id, room);
   }
   return room;
@@ -215,7 +216,7 @@ function markRoomPausedInSync(room) {
 function checkRoomSync() {
   const startedAt = Date.now();
   for (const [roomId, room] of rooms) {
-    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress || roomHasNoSyncUser(room)) continue;
+    if (!room.playback.playing || !room.playback.itemId || room.users.size < 2 || room.syncCheckInProgress || room.syncSettled || roomHasNoSyncUser(room)) continue;
     room.adjustmentAttempt = 0;
     room.syncCheckInProgress = true;
     for (const user of room.users.values()) {
@@ -263,7 +264,10 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
   }
   broadcastUsers(roomId);
   if (adjusted) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
-  else room.syncCheckInProgress = false;
+  else {
+    room.syncCheckInProgress = false;
+    room.syncSettled = true;
+  }
 }
 function recheckRoomSync(roomId, cycle, attempt, itemId) {
   setTimeout(() => {
