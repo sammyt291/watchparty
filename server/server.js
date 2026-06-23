@@ -129,20 +129,24 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
   if (basePlayback.playing) basePlayback.updatedAt = Date.now() + maxOneWayPing;
 
   for (const user of usersByPing) {
-    if (!rooms.get(roomId)?.users.has(user.id)) continue;
     const userOneWayPing = user.ping || 0;
-    const startDelayMs = basePlayback.playing ? Math.max(0, maxOneWayPing - userOneWayPing) : 0;
-    io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, startDelayMs, true));
+    const sendDelayMs = basePlayback.playing ? Math.max(0, maxOneWayPing - userOneWayPing) : 0;
+    const sendPlayback = () => {
+      if (!rooms.get(roomId)?.users.has(user.id)) return;
+      io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, true));
+    };
+
+    if (sendDelayMs === 0) sendPlayback();
+    else room.playbackTimers.push(setTimeout(sendPlayback, sendDelayMs));
   }
 }
-function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, startDelayMs = 0, isScheduledPlayback = false) {
+function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, isScheduledPlayback = false) {
   const user = room.users.get(socketId);
   const now = Date.now();
   const elapsedMs = basePlayback.playing && !isScheduledPlayback ? Math.max(0, now - basePlayback.updatedAt + (user?.ping || 0)) : 0;
   return {
     ...basePlayback,
     originId,
-    startDelayMs,
     time: Math.max(0, basePlayback.time + elapsedMs / 1000),
     updatedAt: now,
   };
