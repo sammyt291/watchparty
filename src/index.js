@@ -19,7 +19,6 @@ let syncStatus = "Pending";
 let pendingLocalPlaylist = false;
 let syncAdjustmentKey = null;
 let syncOverlayMode = "initial";
-const CLIENT_SYNC_TARGET_TOLERANCE_MS = 50;
 const VOLUME_STORAGE_KEY = "watchparty:volume";
 let playerVolume = readStoredVolume();
 
@@ -223,7 +222,7 @@ function togglePlay() { playbackUnlocked = true; updatePlaybackGate(); emitPlayb
 function seek() { const duration = getYtDuration(); const time = (Number(byId("seek").value) / 1000) * duration; emitPlayback(playback.playing, time); }
 function changeVolume() { playerVolume = Number(byId("volume").value); localStorage.setItem(VOLUME_STORAGE_KEY, String(playerVolume)); setPlayerVolume(); }
 function setPlayerVolume() { if (hasYtMethod("setVolume")) ytPlayer.setVolume(playerVolume); }
-setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); updateClientSyncHappiness(); }, 500);
+setInterval(() => { const d = getYtDuration(); if (d) byId("seek").value = String((getYtTime() / d) * 1000); }, 500);
 function emitPlaylist() { pendingLocalPlaylist = true; socket?.emit("playlist", playlist); paintQueue(); loadCurrent(); }
 function emitPlayback(playing = playback.playing, time = getYtTime() || playback.time, itemId = playback.itemId) { setSyncStatus("Pending"); socket?.emit("playback", { itemId, playing, time }); }
 function playPlaylistItem(itemId) { if (!itemId || itemId === playback.itemId) return; playbackUnlocked = true; updatePlaybackGate(); emitPlayback(true, 0, itemId); }
@@ -242,7 +241,6 @@ function beginSync(mode = "initial") {
   syncOverlayMode = mode;
   if (!playback.itemId) { setSyncStatus("Sync"); return; }
   setSyncStatus("Syncing");
-  updateClientSyncHappiness();
 }
 function setSyncStatus(status) { syncStatus = status; socket?.emit("syncStatus", status); const own = users.find((u) => u.id === socket?.id); if (own) own.syncStatus = status; paintUsers(); updateSyncOverlay(); }
 function syncOwnStatusFromUsers() {
@@ -281,13 +279,6 @@ function applyServerSyncAdjustment(adjustment) {
   syncAdjustmentKey = adjustmentKey;
   beginSync("adjustment");
   withIgnoredPlayerEvents(() => ytPlayer.seekTo(Math.max(0, getYtTime() + seekDelta), true));
-  setTimeout(updateClientSyncHappiness, 100);
-}
-function updateClientSyncHappiness() {
-  if (syncStatus !== "Syncing" || !playback.playing || isPlaybackGateVisible()) return;
-  if (!isYouTubePlayer() || !ytReady) return;
-  const offsetMs = Math.abs(getYtTime() - targetPlaybackTime()) * 1000;
-  if (offsetMs <= CLIENT_SYNC_TARGET_TOLERANCE_MS) setSyncStatus("Sync");
 }
 function formatSeekOffsetMs(offset) {
   const seconds = Number(offset);

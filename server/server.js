@@ -11,11 +11,12 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
 const SYNC_CHECK_INTERVAL_MS = 1000;
-const SYNC_INITIAL_STEP_MS = 100;
-const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 15;
+const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 3;
 const SYNC_TARGET_TOLERANCE_MS = 50;
 const SYNC_DEBUG_MODE = true;
-const SYNC_OVERSHOOT_STEP_REDUCTION_PERCENT = 8;
+const MAX_SINGLE_SYNC_ADJUSTMENT_SECONDS = 5;
+const SYNC_ADJUSTMENT_SETTLE_MS = 250;
+const SYNC_POSITION_COLLECTION_MS = 300;
 const PLAYBACK_START_SAFETY_MARGIN_MS = 50;
 const POST_PLAYBACK_SYNC_SETTLE_MS = 250;
 app.use(cors());
@@ -265,8 +266,8 @@ function checkRoomSync() {
       user.syncAdjustmentStepSeconds = null;
     }
     room.syncReferenceUserId = room.syncAnchorUserId;
-    io.to(roomId).emit("syncCheck", { itemId: room.playback.itemId, cycle: room.adjustmentCycle, attempt: room.adjustmentAttempt });
-    setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.adjustmentAttempt, room.playback.itemId), 750);
+    emitSyncCheck(room, { itemId: room.playback.itemId, cycle: room.adjustmentCycle, attempt: room.adjustmentAttempt });
+    setTimeout(() => adjustRoomSync(roomId, startedAt, room.adjustmentCycle, room.adjustmentAttempt, room.playback.itemId), SYNC_POSITION_COLLECTION_MS);
   }
 }
 function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
@@ -293,13 +294,6 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     if (user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1) continue;
     if (attempt >= MAX_SYNC_ADJUSTMENT_ATTEMPTS) {
       user.syncStatus = "No Sync";
-      if (user.syncAdjustmentState) trackBestSyncOffset(user.syncAdjustmentState, offset);
-      const finalSeekDelta = finalBestSyncAdjustment(user, offset);
-      if (Math.abs(finalSeekDelta) > 0.01 && !(user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1)) {
-        user.adjustedCycle = cycle;
-        user.adjustedAttempt = attempt + 1;
-        io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, seekDelta: finalSeekDelta, skipAhead: Math.max(0, finalSeekDelta), final: true });
-      }
       continue;
     }
     user.syncStatus = "Syncing";
@@ -307,7 +301,8 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     user.adjustedCycle = cycle;
     user.adjustedAttempt = attempt + 1;
     adjusted = true;
-    const requestedSeekDelta = nextSyncAdjustment(user, cycle, offset, targetSeekDelta);
+    const requestedSeekDelta = directSyncAdjustment(targetSeekDelta);
+    user.syncAdjustmentStepSeconds = Math.abs(requestedSeekDelta);
     io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, seekDelta: requestedSeekDelta, skipAhead: Math.max(0, requestedSeekDelta) });
   }
   broadcastUsers(roomId);
@@ -326,9 +321,9 @@ function recheckRoomSync(roomId, cycle, attempt, itemId) {
     }
     room.adjustmentAttempt = attempt;
     const startedAt = Date.now();
-    io.to(roomId).emit("syncCheck", { itemId, cycle, attempt });
-    setTimeout(() => adjustRoomSync(roomId, startedAt, cycle, attempt, itemId), 750);
-  }, 900);
+    emitSyncCheck(room, { itemId, cycle, attempt });
+    setTimeout(() => adjustRoomSync(roomId, startedAt, cycle, attempt, itemId), SYNC_POSITION_COLLECTION_MS);
+  }, SYNC_ADJUSTMENT_SETTLE_MS);
 }
 
 function secondsFromMs(ms) { return ms / 1000; }
@@ -343,45 +338,16 @@ function syncTargetTime(room, positions) {
   room.syncReferenceUserId = leadingPosition.user.id;
   return leadingPosition.currentTime;
 }
-function nextSyncAdjustment(user, cycle, offset, targetSeekDelta) {
-  if (!user.syncAdjustmentState || user.syncAdjustmentState.cycle !== cycle) {
-    user.syncAdjustmentState = {
-      cycle,
-      stepSeconds: secondsFromMs(SYNC_INITIAL_STEP_MS),
-      direction: Math.sign(targetSeekDelta),
-      previousOffset: null,
-      hasOvershot: false,
-      bestOffset: null,
-    };
-  }
-
-  const state = user.syncAdjustmentState;
-  trackBestSyncOffset(state, offset);
-  const previousOffset = Number.isFinite(state.previousOffset) ? state.previousOffset : null;
-  const overshot = previousOffset != null && Math.sign(previousOffset) !== Math.sign(offset);
-
-  if (overshot) {
-    state.direction *= -1;
-    state.stepSeconds *= 1 - SYNC_OVERSHOOT_STEP_REDUCTION_PERCENT / 100;
-    state.hasOvershot = true;
-  }
-
-  const seekDelta = state.direction * state.stepSeconds;
-  user.syncAdjustmentStepSeconds = state.stepSeconds;
-  state.previousOffset = offset;
-
-  if (!overshot && !state.hasOvershot) state.stepSeconds *= 2;
-
-  return seekDelta;
+function directSyncAdjustment(targetSeekDelta) {
+  const magnitude = Math.min(Math.abs(targetSeekDelta), MAX_SINGLE_SYNC_ADJUSTMENT_SECONDS);
+  return Math.sign(targetSeekDelta) * magnitude;
 }
-function trackBestSyncOffset(state, offset) {
-  if (!Number.isFinite(offset)) return;
-  if (!Number.isFinite(state.bestOffset) || Math.abs(offset) < Math.abs(state.bestOffset)) state.bestOffset = offset;
+function emitSyncCheck(room, check) {
+  const pendingUsers = usersForSyncCheck(room);
+  for (const user of pendingUsers) io.to(user.id).emit("syncCheck", check);
 }
-function finalBestSyncAdjustment(user, offset) {
-  const bestOffset = user.syncAdjustmentState?.bestOffset;
-  if (!Number.isFinite(offset) || !Number.isFinite(bestOffset)) return 0;
-  return bestOffset - offset;
+function usersForSyncCheck(room) {
+  return [...room.users.values()].filter((user) => !user.syncSettled || user.id === room.syncAnchorUserId || user.id === room.syncReferenceUserId);
 }
 function roomUsersAreSyncSettled(room) {
   return [...room.users.values()].every((user) => user.syncSettled);
