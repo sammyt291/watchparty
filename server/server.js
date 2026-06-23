@@ -18,6 +18,7 @@ const SYNC_ADJUSTMENT_PID_KI = 0.2;
 const SYNC_ADJUSTMENT_PID_KD = 0.35;
 const SYNC_ADJUSTMENT_PID_INTEGRAL_LIMIT_SECONDS = 1.5;
 const SYNC_ADJUSTMENT_MIN_SEEK_MS = 80;
+const SYNC_LATENCY_UNCERTAINTY_FACTOR = 1;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -269,7 +270,7 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     user.seekOffset = offset;
     const measurement = recordSyncMeasurement(user, cycle, attempt, offset);
     const seekDelta = -offset;
-    if (Math.abs(seekDelta) <= secondsFromMs(SYNC_TARGET_TOLERANCE_MS)) {
+    if (Math.abs(seekDelta) <= syncToleranceSecondsForUser(user)) {
       user.syncStatus = "Sync";
       user.syncSettled = true;
       continue;
@@ -311,6 +312,10 @@ function recheckRoomSync(roomId, cycle, attempt, itemId) {
 }
 
 function secondsFromMs(ms) { return ms / 1000; }
+function syncToleranceSecondsForUser(user) {
+  const latencyUncertaintyMs = Number.isFinite(user?.ping) ? user.ping * SYNC_LATENCY_UNCERTAINTY_FACTOR : 0;
+  return secondsFromMs(SYNC_TARGET_TOLERANCE_MS + latencyUncertaintyMs);
+}
 function syncTargetTime(room, positions) {
   const anchorPosition = positions.find(({ user }) => user.id === room.syncAnchorUserId && user.syncSettled && user.syncStatus === "Sync");
   if (anchorPosition) return anchorPosition.currentTime;
