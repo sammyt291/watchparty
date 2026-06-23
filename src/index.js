@@ -19,6 +19,7 @@ let syncStatus = "Pending";
 let pendingLocalPlaylist = false;
 let syncOverlayMode = "initial";
 let syncCheckTimer = null;
+let scheduledPlaybackTimer = null;
 const SYNC_TIME_TOLERANCE_SECONDS = 0.35;
 const VOLUME_STORAGE_KEY = "watchparty:volume";
 let playerVolume = readStoredVolume();
@@ -195,14 +196,17 @@ function onYouTubeReady() {
 }
 function applyPlayback(fineAdjust = false, options = {}) {
   byId("playPause").textContent = playback.playing ? "Pause" : "Play";
+  clearScheduledPlaybackTimer();
   if (!ytReady || !isYouTubePlayer()) { scheduleSyncCheck(); return; }
 
+  const startDelayMs = scheduledPlaybackDelayMs();
   const t = targetPlaybackTime();
   withIgnoredPlayerEvents(() => {
     if (!options.skipSeek && hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
-    if ((!playback.playing || !playbackUnlocked) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
-    if (playback.playing && playbackUnlocked && hasYtMethod("playVideo")) ytPlayer.playVideo();
+    if ((!playback.playing || !playbackUnlocked || startDelayMs > 0) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
+    if (playback.playing && playbackUnlocked && startDelayMs === 0 && hasYtMethod("playVideo")) ytPlayer.playVideo();
   });
+  if (startDelayMs > 0) scheduledPlaybackTimer = setTimeout(() => applyPlayback(true, { skipSeek: true }), startDelayMs);
   scheduleSyncCheck();
 }
 function syncFromPlayer(e) {
@@ -229,10 +233,23 @@ function editName() { const next = prompt("Edit your display name", localStorage
 function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); beginSync(); applyPlayback(true); }
 function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", !isPlaybackGateVisible()); }
 function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing && Boolean(playback.itemId); }
-function localPlayback(next) { return { ...next, updatedAt: Date.now() }; }
+function localPlayback(next) {
+  if (!next.playing) return { ...next, updatedAt: Date.now() };
+  const startDelayMs = Number.isFinite(next.scheduledStartDelayMs) ? Math.max(0, Number(next.scheduledStartDelayMs)) : 0;
+  return { ...next, updatedAt: Date.now() + startDelayMs };
+}
 function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
   return playback.time + Math.max(0, Date.now() - playback.updatedAt) / 1000;
+}
+function scheduledPlaybackDelayMs() {
+  if (!playback.playing || !playbackUnlocked) return 0;
+  return Math.max(0, playback.updatedAt - Date.now());
+}
+function clearScheduledPlaybackTimer() {
+  if (!scheduledPlaybackTimer) return;
+  clearTimeout(scheduledPlaybackTimer);
+  scheduledPlaybackTimer = null;
 }
 function beginSync(mode = "initial") {
   if (isPlaybackGateVisible()) { clearSyncCheck(); setSyncStatus("Joining"); return; }

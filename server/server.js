@@ -155,39 +155,33 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
   const playbackLeadMs = basePlayback.playing
     ? Math.max(MIN_PLAYBACK_START_LEAD_MS, (maxOneWayPing * PLAYBACK_START_PING_MULTIPLIER) + PLAYBACK_START_SAFETY_MARGIN_MS)
     : 0;
-  const scheduledStartAt = basePlayback.playing ? Date.now() + playbackLeadMs : null;
   const scheduledPlayback = basePlayback.playing
-    ? { ...basePlayback, time: basePlayback.time + secondsFromMs(playbackLeadMs), updatedAt: scheduledStartAt }
+    ? { ...basePlayback, time: basePlayback.time + secondsFromMs(playbackLeadMs), updatedAt: Date.now() + playbackLeadMs }
     : basePlayback;
 
   for (const user of usersByPing) {
-    const isOrigin = Boolean(originId && user.id === originId);
-    const userOneWayPing = user.ping || 0;
-    const sendDelayMs = basePlayback.playing && !isOrigin ? Math.max(0, scheduledStartAt - Date.now() - userOneWayPing) : 0;
-    const userPlayback = basePlayback.playing && !isOrigin ? scheduledPlayback : basePlayback;
-    const sendPlayback = () => {
-      if (!rooms.get(roomId)?.users.has(user.id)) return;
-      const playbackMessage = playbackForUser(room, user.id, userPlayback, originId, !isOrigin && basePlayback.playing);
-      user.seekTime = playbackMessage.time;
-      user.seekOffset = null;
-      user.syncStatus = room.playback.itemId ? "Syncing" : "Sync";
-      io.to(user.id).emit("playback", playbackMessage);
-      broadcastUsers(roomId);
-    };
-
-    if (sendDelayMs === 0) sendPlayback();
-    else room.playbackTimers.push(setTimeout(sendPlayback, sendDelayMs));
+    const playbackMessage = playbackForUser(room, user.id, scheduledPlayback, originId, basePlayback.playing);
+    user.seekTime = playbackMessage.time;
+    user.seekOffset = null;
+    user.syncStatus = room.playback.itemId ? "Syncing" : "Sync";
+    io.to(user.id).emit("playback", playbackMessage);
   }
+  broadcastUsers(roomId);
 }
 function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, isScheduledPlayback = false) {
   const user = room.users.get(socketId);
   const now = Date.now();
-  const elapsedMs = basePlayback.playing && !isScheduledPlayback ? Math.max(0, now - basePlayback.updatedAt + (user?.ping || 0)) : 0;
+  const userOneWayPing = user?.ping || 0;
+  const elapsedMs = basePlayback.playing && !isScheduledPlayback ? Math.max(0, now - basePlayback.updatedAt + userOneWayPing) : 0;
+  // Send a relative delay instead of asking clients to trust the server clock.
+  // Subtract the user's estimated one-way ping so the local timer lands near the shared server start.
+  const scheduledStartDelayMs = isScheduledPlayback ? Math.max(0, basePlayback.updatedAt - now - userOneWayPing) : 0;
   return {
     ...basePlayback,
     originId,
+    scheduledStartDelayMs,
     time: Math.max(0, basePlayback.time + elapsedMs / 1000),
-    updatedAt: now,
+    updatedAt: isScheduledPlayback ? now + scheduledStartDelayMs : now,
   };
 }
 function markRoomPausedInSync(room) {
