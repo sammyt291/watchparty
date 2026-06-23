@@ -79,6 +79,14 @@ io.on("connection", (socket) => {
     broadcastUsers(roomId);
   });
 
+  socket.on("seekTelemetry", (telemetry) => {
+    const user = room.users.get(socket.id);
+    if (!user) return;
+    user.seekTime = cleanTelemetrySeconds(telemetry?.time);
+    user.seekOffset = cleanTelemetrySeconds(telemetry?.offset);
+    broadcastUsers(roomId);
+  });
+
   socket.on("playlist", (playlist) => {
     room.playlist = Array.isArray(playlist) ? playlist.map(cleanItem).filter(Boolean) : [];
     if (!room.playback.itemId && room.playlist[0]) {
@@ -210,6 +218,11 @@ function safeName(value) { return String(value).replace(/[\t\n\r]/g, " ").trim()
 function getIp(address) { return address.replace(/^::ffff:/, ""); }
 function cleanItem(item) { return item?.id && item?.url ? { ...item, title: item.title || item.url } : null; }
 function cleanSyncStatus(status) { return ["Pending", "Joining", "Syncing", "Sync"].includes(status) ? status : "Pending"; }
+function cleanTelemetrySeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return null;
+  return Math.round(seconds * 1000) / 1000;
+}
 function provider(url) {
   if (/youtu\.be|youtube\.com/i.test(url)) return "youtube";
   if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";
