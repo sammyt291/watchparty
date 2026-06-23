@@ -131,6 +131,10 @@ io.on("connection", (socket) => {
       time: Number.isFinite(playback.time) ? Math.max(0, Number(playback.time)) : room.playback.time,
       updatedAt: Date.now(),
     };
+    if (!nextPlaying && room.playback.itemId) {
+      markRoomPausedInSync(room);
+      broadcastUsers(roomId);
+    }
     schedulePlayback(roomId, room, room.playback, socket.id);
   });
 
@@ -187,6 +191,22 @@ function playbackForUser(room, socketId, basePlayback = room.playback, originId 
     updatedAt: now,
   };
 }
+function markRoomPausedInSync(room) {
+  for (const user of room.users.values()) {
+    user.seekTime = room.playback.time;
+    user.seekOffset = 0;
+    user.syncStatus = "Sync";
+    user.position = {
+      itemId: room.playback.itemId,
+      playing: false,
+      time: room.playback.time,
+      receivedAt: Date.now(),
+      cycle: room.adjustmentCycle,
+      attempt: room.adjustmentAttempt,
+    };
+  }
+}
+
 function checkRoomSync() {
   const startedAt = Date.now();
   for (const [roomId, room] of rooms) {
