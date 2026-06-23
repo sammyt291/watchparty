@@ -191,8 +191,7 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
     const sendDelayMs = basePlayback.playing ? Math.max(0, scheduledStartAt - Date.now() - userOneWayPing) : 0;
     const sendPlayback = () => {
       if (!rooms.get(roomId)?.users.has(user.id)) return;
-      const remainingStartDelayMs = basePlayback.playing ? Math.max(0, scheduledStartAt - Date.now() - userOneWayPing) : 0;
-      io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, true, remainingStartDelayMs));
+      io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, true));
     };
 
     if (sendDelayMs === 0) sendPlayback();
@@ -201,7 +200,7 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
 
   if (basePlayback.playing) schedulePostPlaybackSyncCheck(roomId, room, maxOneWayPing);
 }
-function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, isScheduledPlayback = false, startDelayMs = 0) {
+function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, isScheduledPlayback = false) {
   const user = room.users.get(socketId);
   const now = Date.now();
   const elapsedMs = basePlayback.playing && !isScheduledPlayback ? Math.max(0, now - basePlayback.updatedAt + (user?.ping || 0)) : 0;
@@ -209,8 +208,7 @@ function playbackForUser(room, socketId, basePlayback = room.playback, originId 
     ...basePlayback,
     originId,
     time: Math.max(0, basePlayback.time + elapsedMs / 1000),
-    updatedAt: now + Math.max(0, Math.round(startDelayMs)),
-    startDelayMs: Math.max(0, Math.round(startDelayMs)),
+    updatedAt: now,
   };
 }
 function markPlaybackOriginInSync(room, socketId) {
