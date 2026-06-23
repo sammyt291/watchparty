@@ -99,3 +99,21 @@ h2 { font-size: 1rem; overflow-wrap: anywhere; margin: 0; color: #ffce6a; }
 .user[data-sync="Joining"] small { color: #ffabab; }
 .user[data-sync="Syncing"] small { color: #ffb45f; }
 .user[data-sync="Sync"] small { color: #76e6a5; }
+
+.sync-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background: rgb(5 6 9 / 48%);
+  color: #fff4d8;
+  font-size: clamp(1.2rem, 4vw, 2.4rem);
+  font-weight: 900;
+  letter-spacing: .04em;
+  text-align: center;
+  text-shadow: 0 3px 18px #000;
+  pointer-events: none;
+}
+.sync-overlay.is-hidden { display: none; }
