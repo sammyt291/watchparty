@@ -60,7 +60,7 @@ function renderRoom(id) {
   socket.on("serverPong", () => {
     const ping = Date.now() - pingStart;
     pingSamples.push(ping);
-    pingSamples = pingSamples.slice(-10);
+    pingSamples = pingSamples.slice(-2);
     socket?.emit("pongMs", ping);
   });
   setInterval(() => { pingStart = Date.now(); socket?.emit("clientPing"); }, 500);
@@ -175,34 +175,12 @@ function editName() { const next = prompt("Edit your display name", localStorage
 function unlockPlayback() { playbackUnlocked = true; updatePlaybackGate(); beginSync(); applyPlayback(true); }
 function updatePlaybackGate() { byId("playbackGate")?.classList.toggle("is-hidden", !isPlaybackGateVisible()); }
 function isPlaybackGateVisible() { return !playbackUnlocked && playback.playing && Boolean(playback.itemId); }
-function localPlayback(next) {
-  const startDelayMs = Number.isFinite(next.targetStartAt) ? Math.max(0, next.targetStartAt - ntpNow()) : Math.max(0, next.startDelayMs || 0);
-  return { ...next, startDelayMs, updatedAt: Date.now() };
-}
-function ntpNow() { return Date.now() + clockOffsetMs; }
-async function pollNtpClock() {
-  const sentAt = Date.now();
-  try {
-    const response = await fetch(CLOCK_SYNC_URL, { cache: "no-store" });
-    if (!response.ok) return;
-    const data = await response.json();
-    const receivedAt = Date.now();
-    const rtt = receivedAt - sentAt;
-    const remoteNow = Number.isFinite(data.unixtime) ? data.unixtime * 1000 : Date.parse(`${data.dateTime || data.utc_datetime || ""}Z`);
-    if (!Number.isFinite(remoteNow)) return;
-
-    clockSyncSamples.push({ offset: Math.round(remoteNow + rtt / 2 - receivedAt), rtt });
-    clockSyncSamples = clockSyncSamples.sort((a, b) => a.rtt - b.rtt).slice(0, CLOCK_SYNC_SAMPLE_LIMIT);
-    clockOffsetMs = clockSyncSamples[0].offset;
-  } catch (error) {
-    console.warn("Unable to poll shared clock", error);
-  }
-}
-function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length : 0; }
+function localPlayback(next) { return { ...next, startDelayMs: Math.max(0, next.startDelayMs || 0), updatedAt: Date.now() }; }
+function avgPing() { return pingSamples.length ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length / 2 : 0; }
 function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
   if (Number.isFinite(playback.startTime)) return playback.startTime + Math.max(0, Date.now() - playback.updatedAt - (playback.startDelayMs || 0)) / 1000;
-  return playback.time + (Date.now() - playback.updatedAt + avgPing() / 2) / 1000;
+  return playback.time + (Date.now() - playback.updatedAt + avgPing()) / 1000;
 }
 function schedulePlaybackStart() {
   const delay = Math.max(0, playback.startDelayMs || 0);

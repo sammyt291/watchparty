@@ -11,15 +11,6 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
-const DEFAULT_PLAY_START_DELAY_CAP_MS = 500;
-const PLAY_START_DELAY_MS = readPlayStartDelayCap();
-const NTP_HOST = process.env.NTP_HOST || "pool.ntp.org";
-const NTP_PORT = Number(process.env.NTP_PORT) || 123;
-const NTP_POLL_INTERVAL_MS = 60_000;
-const NTP_TIMEOUT_MS = 2_000;
-let ntpOffsetMs = 0;
-let ntpUpdatedAt = 0;
-
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -75,8 +66,9 @@ io.on("connection", (socket) => {
     if (nextPing == null) {
       user.ping = null;
     } else {
-      user.pings.push(nextPing);
-      user.pings = user.pings.slice(-10);
+      const oneWayPing = Math.round(nextPing / 2);
+      user.pings.push(oneWayPing);
+      user.pings = user.pings.slice(-2);
       user.ping = Math.round(user.pings.reduce((sum, value) => sum + value, 0) / user.pings.length);
     }
     broadcastUsers(roomId);
@@ -136,46 +128,38 @@ function broadcastPlaylist(roomId, room) { io.to(roomId).emit("playlist", room.p
 function schedulePlayback(roomId, room, basePlayback, originId = null) {
   clearPlaybackTimers(room);
   const usersByPing = [...room.users.values()].sort((a, b) => (b.ping || 0) - (a.ping || 0));
-  const maxPing = usersByPing[0]?.ping || 0;
-  // `ping` is a full round trip, so schedule start using a one-way latency estimate.
-  const playLeadMs = basePlayback.playing ? Math.min(PLAY_START_DELAY_MS, maxPing) : 0;
-  const scheduleStartedAt = Date.now();
+  const maxOneWayPing = usersByPing[0]?.ping || 0;
+  const playLeadMs = basePlayback.playing ? maxOneWayPing : 0;
+  const scheduledStartAt = basePlayback.playing ? Date.now() + playLeadMs : null;
+  if (scheduledStartAt != null) basePlayback.updatedAt = scheduledStartAt;
 
   for (const user of usersByPing) {
-    const userPing = user.ping || 0;
-    const oneWayLatencyMs = userPing / 2;
-    const startDelayMs = basePlayback.playing ? Math.max(0, playLeadMs - oneWayLatencyMs) : 0;
-    const targetStartAt = basePlayback.playing ? scheduleStartedAt + startDelayMs : null;
+    const userOneWayPing = user.ping || 0;
+    const emitDelayMs = basePlayback.playing ? Math.max(0, playLeadMs - userOneWayPing) : 0;
     const emitPlayback = () => {
       if (!rooms.get(roomId)?.users.has(user.id)) return;
-      io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId, targetStartAt));
+      io.to(user.id).emit("playback", playbackForUser(room, user.id, basePlayback, originId));
     };
 
-    emitPlayback();
+    if (emitDelayMs > 0) room.playbackTimers.push(setTimeout(emitPlayback, emitDelayMs));
+    else emitPlayback();
   }
 }
-function playbackForUser(room, socketId, basePlayback = room.playback, originId = null, targetStartAt = null) {
+function playbackForUser(room, socketId, basePlayback = room.playback, originId = null) {
   const user = room.users.get(socketId);
   const now = Date.now();
-  const fallbackElapsed = basePlayback.playing ? (now - basePlayback.updatedAt + (user?.ping || 0) / 2) / 1000 : 0;
-  const startTime = targetStartAt == null ? null : Math.max(0, basePlayback.time + (targetStartAt - basePlayback.updatedAt) / 1000);
+  const fallbackElapsed = basePlayback.playing ? Math.max(0, now - basePlayback.updatedAt + (user?.ping || 0)) / 1000 : 0;
   return {
     ...basePlayback,
     originId,
-    startDelayMs: targetStartAt == null ? 0 : Math.max(0, targetStartAt - now),
-    targetStartAt,
-    startTime,
-    time: startTime ?? Math.max(0, basePlayback.time + fallbackElapsed),
+    startDelayMs: 0,
+    time: Math.max(0, basePlayback.time + fallbackElapsed),
     updatedAt: now,
   };
 }
 function clearPlaybackTimers(room) {
   for (const timer of room.playbackTimers || []) clearTimeout(timer);
   room.playbackTimers = [];
-}
-function readPlayStartDelayCap() {
-  const value = Number(process.env.PLAY_START_DELAY_MS);
-  return Number.isFinite(value) && value >= 0 ? Math.round(value) : DEFAULT_PLAY_START_DELAY_CAP_MS;
 }
 function logRooms() {
   console.clear();
