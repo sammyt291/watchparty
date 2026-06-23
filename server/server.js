@@ -12,11 +12,11 @@ const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] }
 const rooms = new Map();
 const SYNC_CHECK_INTERVAL_MS = 5000;
 const SYNC_CHECK_RESPONSE_MS = 750;
-const SYNC_TARGET_TOLERANCE_SECONDS = 0.05;
+const SYNC_TARGET_TOLERANCE_MS = 10;
 const SYNC_RECHECK_DELAY_MS = 900;
-const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 2;
-const YOUTUBE_SEEK_BUFFER_SECONDS = 0.02;
-const YOUTUBE_SEEK_RETRY_BUFFER_SECONDS = 0.05;
+const MAX_SYNC_ADJUSTMENT_ATTEMPTS = 20;
+const SYNC_ADJUSTMENT_INITIAL_STEP_MS = 40;
+const SYNC_ADJUSTMENT_SCALE_STEP_MS = 50;
 app.use(cors());
 app.use(express.json());
 app.get("/ping", (_req, res) => { res.json("pong"); });
@@ -209,12 +209,12 @@ function adjustRoomSync(roomId, checkStartedAt, cycle, attempt, itemId) {
     const offset = currentTime - furthestTime;
     user.seekOffset = offset;
     const skipAhead = -offset;
-    if (skipAhead <= SYNC_TARGET_TOLERANCE_SECONDS || (user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1)) continue;
+    if (skipAhead <= secondsFromMs(SYNC_TARGET_TOLERANCE_MS) || (user.adjustedCycle === cycle && user.adjustedAttempt >= attempt + 1)) continue;
     user.adjustedCycle = cycle;
     user.adjustedAttempt = attempt + 1;
     adjusted = true;
-    const retryBuffer = attempt > 0 ? YOUTUBE_SEEK_RETRY_BUFFER_SECONDS : YOUTUBE_SEEK_BUFFER_SECONDS;
-    io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, skipAhead: skipAhead + retryBuffer });
+    const stepAmount = secondsFromMs(SYNC_ADJUSTMENT_INITIAL_STEP_MS + (SYNC_ADJUSTMENT_SCALE_STEP_MS * attempt));
+    io.to(user.id).emit("syncAdjustment", { itemId, cycle, attempt: attempt + 1, skipAhead: skipAhead + stepAmount });
   }
   broadcastUsers(roomId);
   if (adjusted && attempt + 1 < MAX_SYNC_ADJUSTMENT_ATTEMPTS) recheckRoomSync(roomId, cycle, attempt + 1, itemId);
@@ -230,6 +230,7 @@ function recheckRoomSync(roomId, cycle, attempt, itemId) {
   }, SYNC_RECHECK_DELAY_MS);
 }
 
+function secondsFromMs(ms) { return ms / 1000; }
 function adjustedPositionTime(user, checkStartedAt, cycle, attempt, itemId) {
   const position = user.position;
   if (!position || position.cycle !== cycle || position.attempt !== attempt || position.itemId !== itemId || !Number.isFinite(position.time)) return NaN;
