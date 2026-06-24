@@ -20,7 +20,12 @@ let pendingLocalPlaylist = false;
 let syncOverlayMode = "initial";
 let syncCheckTimer = null;
 let scheduledPlaybackTimer = null;
-const SYNC_TIME_TOLERANCE_SECONDS = 0.08;
+const SYNC_TIME_TOLERANCE_SECONDS = 0.045;
+const SYNC_RATE_CORRECTION_THRESHOLD_SECONDS = 0.05;
+const SYNC_SEEK_CORRECTION_THRESHOLD_SECONDS = 0.25;
+const SYNC_RATE_CORRECTION_WINDOW_SECONDS = 2;
+const SYNC_RATE_CORRECTION_MAX_DELTA = 0.04;
+const SYNC_SEEK_APPLY_COMPENSATION_SECONDS = 0.035;
 const VOLUME_STORAGE_KEY = "watchparty:volume";
 let playerVolume = readStoredVolume();
 
@@ -67,14 +72,13 @@ function renderRoom(id) {
   });
   socket.on("playlist", (next) => { pendingLocalPlaylist = false; playlist = next; paintQueue(); loadCurrent(); });
   socket.on("playback", (next) => {
-    const wasPlaying = playback.playing;
     const changed = next.itemId !== playback.itemId;
     playback = localPlayback(next);
     updatePlaybackGate();
     if (isPlaybackGateVisible()) setSyncStatus("Joining");
     else beginSync("playback");
     if (changed) loadCurrent();
-    else applyPlayback(true, { skipSeek: !wasPlaying && playback.playing });
+    else applyPlayback(true);
     scheduleSyncCheck();
   });
   socket.on("users", (next) => { users = next; syncOwnStatusFromUsers(); paintUsers(); });
@@ -202,9 +206,12 @@ function applyPlayback(fineAdjust = false, options = {}) {
   const startDelayMs = scheduledPlaybackDelayMs();
   const t = targetPlaybackTime();
   withIgnoredPlayerEvents(() => {
-    if (!options.skipSeek && hasYtMethod("seekTo") && (!fineAdjust || Math.abs(getYtTime() - t) > 0.12)) ytPlayer.seekTo(t, true);
+    const offset = getYtTime() - t;
+    const shouldSeek = !options.skipSeek && hasYtMethod("seekTo") && (!fineAdjust || Math.abs(offset) > SYNC_SEEK_CORRECTION_THRESHOLD_SECONDS);
+    if (shouldSeek) ytPlayer.seekTo(compensatedSeekTargetTime(t), true);
     if ((!playback.playing || !playbackUnlocked || startDelayMs > 0) && hasYtMethod("pauseVideo")) ytPlayer.pauseVideo();
     if (playback.playing && playbackUnlocked && startDelayMs === 0 && hasYtMethod("playVideo")) ytPlayer.playVideo();
+    if (shouldSeek) resetPlaybackRate(); else correctPlaybackRate(offset);
   });
   if (startDelayMs > 0) scheduledPlaybackTimer = setTimeout(() => applyPlayback(true), startDelayMs);
   scheduleSyncCheck();
@@ -241,6 +248,10 @@ function localPlayback(next) {
 function targetPlaybackTime() {
   if (!playback.playing) return playback.time;
   return playback.time + Math.max(0, Date.now() - playback.updatedAt) / 1000;
+}
+function compensatedSeekTargetTime(targetTime = targetPlaybackTime()) {
+  if (!playback.playing || !playbackUnlocked) return targetTime;
+  return targetTime + SYNC_SEEK_APPLY_COMPENSATION_SECONDS;
 }
 function scheduledPlaybackDelayMs() {
   if (!playback.playing || !playbackUnlocked) return 0;
@@ -280,11 +291,12 @@ function checkPlaybackSync() {
   syncCheckTimer = null;
   if (syncStatus !== "Syncing") return;
   if (isPlaybackGateVisible()) { setSyncStatus("Joining"); return; }
-  if (isPlaybackActuallySynced()) { setSyncStatus("Sync"); return; }
-  applyPlayback(true);
+  const offset = currentSyncOffset();
+  if (isPlaybackActuallySynced(offset)) { resetPlaybackRate(); setSyncStatus("Sync"); return; }
+  correctPlaybackDrift(offset);
   scheduleSyncCheck();
 }
-function isPlaybackActuallySynced() {
+function isPlaybackActuallySynced(offset = currentSyncOffset()) {
   if (!playback.itemId) return true;
   if (!isYouTubePlayer()) return !playback.playing;
   if (!ytReady || !hasYtMethod("getPlayerState")) return false;
@@ -292,8 +304,22 @@ function isPlaybackActuallySynced() {
   const expectedPlaying = playback.playing && playbackUnlocked;
   const playerPlaying = playerState === window.YT?.PlayerState.PLAYING || playerState === window.YT?.PlayerState.BUFFERING;
   if (expectedPlaying !== playerPlaying) return false;
-  return Math.abs(getYtTime() - targetPlaybackTime()) <= SYNC_TIME_TOLERANCE_SECONDS;
+  return Math.abs(offset) <= SYNC_TIME_TOLERANCE_SECONDS;
 }
+function correctPlaybackDrift(offset) {
+  const seconds = Number(offset);
+  if (!Number.isFinite(seconds)) { applyPlayback(true); return; }
+  if (Math.abs(seconds) >= SYNC_SEEK_CORRECTION_THRESHOLD_SECONDS) { applyPlayback(true); return; }
+  correctPlaybackRate(seconds);
+}
+function correctPlaybackRate(offset) {
+  if (!playback.playing || !playbackUnlocked || !hasYtMethod("setPlaybackRate")) { resetPlaybackRate(); return; }
+  const seconds = Number(offset);
+  if (!Number.isFinite(seconds) || Math.abs(seconds) < SYNC_RATE_CORRECTION_THRESHOLD_SECONDS) { resetPlaybackRate(); return; }
+  const correction = Math.min(SYNC_RATE_CORRECTION_MAX_DELTA, Math.abs(seconds) / SYNC_RATE_CORRECTION_WINDOW_SECONDS);
+  ytPlayer.setPlaybackRate(seconds < 0 ? 1 + correction : 1 - correction);
+}
+function resetPlaybackRate() { if (hasYtMethod("setPlaybackRate")) ytPlayer.setPlaybackRate(1); }
 function ensureSyncOverlay() {
   if (!byId("syncOverlay")) byId("video")?.insertAdjacentHTML("beforeend", `<div id="syncOverlay" class="sync-overlay is-hidden" aria-live="polite">Syncing playback…</div>`);
   updateSyncOverlay();

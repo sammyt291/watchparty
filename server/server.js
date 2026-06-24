@@ -10,7 +10,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
-const PLAYBACK_START_SAFETY_MARGIN_MS = 30;
+const PLAYBACK_START_SAFETY_MARGIN_MS = 50;
 const PLAYBACK_START_PING_MULTIPLIER = 2;
 const MIN_PLAYBACK_START_LEAD_MS = 80;
 app.use(cors());
@@ -160,6 +160,8 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
   clearPlaybackTimers(room);
   const usersByPing = [...room.users.values()].sort((a, b) => (b.ping || 0) - (a.ping || 0));
   const maxOneWayPing = usersByPing[0]?.ping || 0;
+  // Broadcast play/pause before the intended start; the lead covers a full
+  // ping round trip for the slowest client plus jitter margin.
   const playbackLeadMs = basePlayback.playing
     ? Math.max(MIN_PLAYBACK_START_LEAD_MS, (maxOneWayPing * PLAYBACK_START_PING_MULTIPLIER) + PLAYBACK_START_SAFETY_MARGIN_MS)
     : 0;
@@ -171,7 +173,7 @@ function schedulePlayback(roomId, room, basePlayback, originId = null) {
     const playbackMessage = playbackForUser(room, user.id, scheduledPlayback, originId, basePlayback.playing);
     user.seekTime = playbackMessage.time;
     user.seekOffset = null;
-    user.syncStatus = room.playback.itemId ? "Syncing" : "Sync";
+    user.syncStatus = !room.playback.itemId || user.id === originId ? "Sync" : "Syncing";
     io.to(user.id).emit("playback", playbackMessage);
   }
   broadcastUsers(roomId);
@@ -181,8 +183,8 @@ function playbackForUser(room, socketId, basePlayback = room.playback, originId 
   const now = Date.now();
   const userOneWayPing = user?.ping || 0;
   const elapsedMs = basePlayback.playing && !isScheduledPlayback ? Math.max(0, now - basePlayback.updatedAt + userOneWayPing) : 0;
-  // Send a relative delay instead of asking clients to trust the server clock.
-  // Subtract the user's estimated one-way ping so the local timer lands near the shared server start.
+  // Delay is relative to receipt time: subtract this client's one-way ping so
+  // the local timer lands on the shared server-side start timestamp.
   const scheduledStartDelayMs = isScheduledPlayback ? Math.max(0, basePlayback.updatedAt - now - userOneWayPing) : 0;
   return {
     ...basePlayback,
