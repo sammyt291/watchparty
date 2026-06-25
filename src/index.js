@@ -82,6 +82,9 @@ function renderRoom(id) {
     scheduleSyncCheck();
   });
   socket.on("users", (next) => { users = next; syncOwnStatusFromUsers(); paintUsers(); });
+  socket.on("wsjtx", (message) => {
+    console.info(`WSJT-X ${message.typeName} from ${message.remote.address}:${message.remote.port}`, message);
+  });
   socket.on("serverPong", () => {
     const ping = Date.now() - pingStart;
     socket?.emit("pongMs", ping);
