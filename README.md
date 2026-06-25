@@ -42,3 +42,8 @@ Environment variables are optional:
 - `HOST` — server bind host, default `0.0.0.0`.
 - `PORT` — server port, default `8080`.
 - `CLIENT_DIRECTORY` — directory containing `index.html` and `src/`, default current project root.
+- `WSJTX_ENABLED` — set to `false` to disable the WSJT-X UDP receiver, default enabled.
+- `WSJTX_HOST` — WSJT-X UDP bind host, default `127.0.0.1`. Configure WSJT-X to send to this address.
+- `WSJTX_PORT` — WSJT-X UDP bind port, default `2237`. Configure WSJT-X to send UDP messages to this port.
+
+The server exposes the WSJT-X receiver status at `/api/wsjtx` and broadcasts parsed packet metadata to connected Socket.IO clients as `wsjtx` events.

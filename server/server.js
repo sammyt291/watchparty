@@ -5,11 +5,16 @@ const cors = require("cors");
 const http = require("node:http");
 const { Server } = require("socket.io");
 const config = require("./config.js");
+const { createWsjtxReceiver } = require("./wsjtx.js");
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: {}, transports: ["websocket", "polling"] });
 const rooms = new Map();
+const wsjtxReceiver = createWsjtxReceiver(config, (message) => {
+  console.log(`WSJT-X ${message.typeName} from ${message.remote.address}:${message.remote.port}`);
+  io.emit("wsjtx", message);
+});
 const PLAYBACK_START_SAFETY_MARGIN_MS = 50;
 const PLAYBACK_START_PING_MULTIPLIER = 2;
 const MIN_PLAYBACK_START_LEAD_MS = 80;
@@ -19,6 +24,15 @@ app.get("/ping", (_req, res) => { res.json("pong"); });
 app.get("/api/metadata", async (req, res) => {
   const url = String(req.query.url || "");
   res.json(await getMetadata(url));
+});
+app.get("/api/wsjtx", (_req, res) => {
+  res.json(wsjtxReceiver?.state || {
+    host: config.WSJTX_HOST,
+    port: config.WSJTX_PORT,
+    listening: false,
+    lastMessage: null,
+    lastError: null,
+  });
 });
 
 const clientPath = path.resolve(__dirname, "..", config.CLIENT_DIRECTORY);
